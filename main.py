@@ -4,7 +4,7 @@ import os, ccxt, requests, time, hmac, hashlib, datetime
 
 app = Flask(__name__)
 @app.route('/')
-def home(): return "V3.2.5 BYBIT AUTO 5% 20% SL + Daily PnL - LIVE"
+def home(): return "V3.2.5 4/6 AUTO 4-TRADES 5% 20% LIVE"
 def run_web():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
@@ -27,12 +27,13 @@ except: pass
 
 PERCENT_PER_TRADE = 5
 MAX_LOSS_PERCENT_OF_MARGIN = 20
-MAX_OPEN_TRADES = 3
+MAX_OPEN_TRADES = 4 # <--- CHANGED TO 4
+MIN_SCORE_TO_TRADE = 4 # <--- CHANGED TO 4/6 like old V3.2.5
 MAX_LEVERAGE = 10
 MIN_LEVERAGE = 5
+
 WATCHLIST = ["BTC/USDT:USDT","ZEC/USDT:USDT","ETH/USDT:USDT","SOL/USDT:USDT","DOGE/USDT:USDT","BONK/USDT:USDT","WIF/USDT:USDT","AVAX/USDT:USDT"]
 SCAN_TFS = ['15m','30m','1h','2h']
-
 WAT = datetime.timezone(datetime.timedelta(hours=1))
 
 def send(msg):
@@ -40,9 +41,7 @@ def send(msg):
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
         data={"chat_id": CHAT_ID, "text": msg[:3800]}, timeout=15)
     except: pass
-
 def fmt(p): return f"{p:.6f}" if p<0.01 else f"{p:.5f}" if p<1 else f"{p:.2f}"
-
 def get_balance():
     try:
         bal = exchange.fetch_balance(params={'accountType': 'UNIFIED'})
@@ -61,7 +60,6 @@ def get_balance():
                 if c["coin"]=="USDT": return float(c["walletBalance"])
     except: pass
     return 0
-
 def get_ohlcv(s,tf,lim=100):
     try: return exchange.fetch_ohlcv(s,tf,limit=lim)
     except: return None
@@ -79,7 +77,6 @@ def calc_ema(c,p=50):
     k=2/(p+1); ema=sum(c[:p])/p
     for pr in c[p:]: ema=pr*k+ema*(1-k)
     return ema
-
 def pro_smc(symbol):
     o1h=get_ohlcv(symbol,'1h',100)
     if not o1h or len(o1h)<60: return "",False,None
@@ -115,19 +112,15 @@ def pro_smc(symbol):
                 tp1=entry-risk*1.5; tp2=entry-risk*3
                 best={"symbol":symbol,"side":"SHORT","entry":entry,"sl":sl,"tp1":tp1,"tp2":tp2,"tf":tf,"score":score,"be_done":False}
     return (f"{best['symbol']} {best['side']} {best_score}/6", True, best) if best else ("", False, None)
-
 def calc_leverage_for_20pct_sl(entry, sl):
     dist_pct = abs(entry - sl) / entry
     if dist_pct==0: return MIN_LEVERAGE, 0
     max_lev = (MAX_LOSS_PERCENT_OF_MARGIN/100) / dist_pct
     lev = int(max_lev)
-    lev = max(MIN_LEVERAGE, min(lev, MAX_LEVERAGE))
-    return lev, dist_pct*100
-
+    return max(MIN_LEVERAGE, min(lev, MAX_LEVERAGE)), dist_pct*100
 def set_lev(symbol, lev):
     try: exchange.set_leverage(lev, symbol)
     except: pass
-
 def open_bybit(symbol, side, lev, margin):
     try:
         set_lev(symbol, lev); price=get_price(symbol)
@@ -139,7 +132,6 @@ def open_bybit(symbol, side, lev, margin):
         return order, amount, price
     except Exception as e:
         send(f"❌ OPEN FAIL {symbol}: {e}"); return None,0,0
-
 def close_bybit(symbol, side, amount, perc=100):
     try:
         close_side='sell' if side=='LONG' else 'buy'
@@ -147,16 +139,13 @@ def close_bybit(symbol, side, amount, perc=100):
         exchange.create_market_order(symbol, close_side, amt, params={'reduceOnly':True})
     except Exception as e: send(f"❌ CLOSE FAIL {symbol}: {e}")
 
-# === INIT ===
 bal = get_balance()
 day_start_balance = bal if bal>0 else 50000
 last_daily_report_date = None
 active = {}
-
 if bal>0:
-    send(f"✅ V3.2.5 FIXED LIVE\nBal ${bal:.2f} | 5%=${bal*0.05:.2f} | MaxLoss 20%=${bal*0.05*0.2:.2f}\nMax {MAX_OPEN_TRADES} trades | Daily PnL 00:00 WAT\nWatch: ZEC,BTC,ETH,SOL,DOGE,BONK,WIF,AVAX\nSend /scan")
-else:
-    send("⚠️ Balance 0 - will retry on /scan")
+    send(f"✅ V3.2.5 4/6 LIVE - 4 TRADES\nBal ${bal:.2f} | 5%=${bal*0.05:.2f} MaxLoss 20%=${bal*0.05*0.2:.2f}\nScore >=4/6 (like old) | Max {MAX_OPEN_TRADES} | 00:00 WAT PnL\nSend /scan")
+else: send("⚠️ Balance 0 - will retry")
 
 last_id=0; last_check=0
 while True:
@@ -165,8 +154,7 @@ while True:
         if now_wat.hour==0 and now_wat.minute<5:
             today = now_wat.date()
             if last_daily_report_date!= today:
-                cur_bal = get_balance()
-                floating=0
+                cur_bal = get_balance(); floating=0
                 for t in active.values():
                     cur=get_price(t['symbol'])
                     if cur:
@@ -174,9 +162,8 @@ while True:
                         floating+=pnl
                 daily = cur_bal - day_start_balance + floating
                 pct = (daily/day_start_balance*100) if day_start_balance>0 else 0
-                send(f"📊 DAILY PnL {today} 00:00 WAT\nStart ${day_start_balance:.2f} -> Now ${cur_bal:.2f}\nFloating ${floating:+.2f}\nNet Daily {daily:+.2f} ({pct:+.2f}%)\nOpen {len(active)}/{MAX_OPEN_TRADES}")
-                day_start_balance = cur_bal
-                last_daily_report_date = today
+                send(f"📊 DAILY PnL {today} 00:00 WAT\nStart ${day_start_balance:.2f} -> Now ${cur_bal:.2f}\nFloat ${floating:+.2f}\nNet {daily:+.2f} ({pct:+.2f}%) Open {len(active)}/{MAX_OPEN_TRADES}")
+                day_start_balance = cur_bal; last_daily_report_date = today
 
         res=requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={last_id+1}&timeout=20",timeout=25).json()
         for upd in res.get("result",[]):
@@ -184,23 +171,23 @@ while True:
             txt=upd.get("message",{}).get("text","").lower()
             if txt=="/scan":
                 bal=get_balance()
-                if bal==0: send("❌ Balance 0 - check Bybit Demo API"); continue
-                if len(active)>=MAX_OPEN_TRADES: send(f"⏸️ Max {MAX_OPEN_TRADES} reached. Bal ${bal:.2f}"); continue
+                if bal==0: send("❌ Balance 0"); continue
+                if len(active)>=MAX_OPEN_TRADES: send(f"⏸️ Max {MAX_OPEN_TRADES} reached Bal ${bal:.2f}"); continue
                 cands=[]
                 for coin in WATCHLIST:
                     if coin in active: continue
                     _,ok,tr=pro_smc(coin)
-                    if ok and tr['score']>=5:
+                    if ok and tr['score']>=MIN_SCORE_TO_TRADE:
                         lev,dist=calc_leverage_for_20pct_sl(tr['entry'],tr['sl']); tr['leverage']=lev; tr['dist_pct']=dist; cands.append(tr)
                     time.sleep(0.2)
                 cands.sort(key=lambda x: x['score'], reverse=True)
-                if not cands: send(f"🔍 No 5+ setup. Bal ${bal:.2f} Active {len(active)}/{MAX_OPEN_TRADES}")
+                if not cands: send(f"🔍 No 4+ setup. Bal ${bal:.2f} Active {len(active)}/{MAX_OPEN_TRADES}")
                 for tr in cands[:MAX_OPEN_TRADES-len(active)]:
                     bal=get_balance(); margin=bal*PERCENT_PER_TRADE/100
                     o,a,p=open_bybit(tr['symbol'],tr['side'],tr['leverage'],margin)
                     if o:
                         tr['amount']=a; tr['entry']=p; tr['margin']=margin; active[tr['symbol']]=tr
-                        send(f"🟢 OPENED {tr['symbol']} {tr['side']} {tr['leverage']}x\nEntry {fmt(p)} SL {fmt(tr['sl'])} Dist {tr['dist_pct']:.2f}%\nMargin ${margin:.2f} MaxLoss ${margin*0.2:.2f} (20%)\nScore {tr['score']}/6 TF {tr['tf']}")
+                        send(f"🟢 OPENED {tr['symbol']} {tr['side']} {tr['leverage']}x\nEntry {fmt(p)} SL {fmt(tr['sl'])} Dist {tr['dist_pct']:.2f}%\nMargin ${margin:.2f} MaxLoss ${margin*0.2:.2f}\nScore {tr['score']}/6 TF {tr['tf']} TP1 {fmt(tr['tp1'])}")
             elif txt in ["/bal","/balance","/trades","/pnl"]:
                 bal=get_balance(); msg=f"💰 Bal ${bal:.2f} Active {len(active)}/{MAX_OPEN_TRADES} DayStart ${day_start_balance:.2f}\n"
                 floating=0
@@ -215,16 +202,32 @@ while True:
 
         if time.time()-last_check>120:
             last_check=time.time()
+            # auto scan
+            if len(active)<MAX_OPEN_TRADES:
+                cands=[]
+                for coin in WATCHLIST:
+                    if coin in active: continue
+                    _,ok,tr=pro_smc(coin)
+                    if ok and tr['score']>=MIN_SCORE_TO_TRADE:
+                        lev,dist=calc_leverage_for_20pct_sl(tr['entry'],tr['sl']); tr['leverage']=lev; tr['dist_pct']=dist; cands.append(tr)
+                cands.sort(key=lambda x: x['score'], reverse=True)
+                for tr in cands[:MAX_OPEN_TRADES-len(active)]:
+                    bal=get_balance(); margin=bal*PERCENT_PER_TRADE/100
+                    o,a,p=open_bybit(tr['symbol'],tr['side'],tr['leverage'],margin)
+                    if o:
+                        tr['amount']=a; tr['entry']=p; tr['margin']=margin; active[tr['symbol']]=tr
+                        send(f"🚨 AUTO {tr['symbol']} {tr['side']} {tr['leverage']}x Score {tr['score']}/6")
+
             for coin,t in list(active.items()):
                 cur=get_price(coin)
                 if not cur: continue
                 if t['side']=="LONG":
                     if not t['be_done'] and cur>=t['tp1']: close_bybit(coin,t['side'],t['amount'],50); send(f"🔒 {coin} TP1 +50%"); t['be_done']=True; t['amount']*=0.5
-                    elif cur>=t['tp2']: close_bybit(coin,t['side'],t['amount'],100); send(f"🎯 {coin} TP2 closed"); del active[coin]
+                    elif cur>=t['tp2']: close_bybit(coin,t['side'],t['amount'],100); send(f"🎯 {coin} TP2"); del active[coin]
                     elif cur<=t['sl']: close_bybit(coin,t['side'],t['amount'],100); send(f"❌ {coin} SL capped 20%"); del active[coin]
                 else:
                     if not t['be_done'] and cur<=t['tp1']: close_bybit(coin,t['side'],t['amount'],50); send(f"🔒 {coin} TP1 +50%"); t['be_done']=True; t['amount']*=0.5
-                    elif cur<=t['tp2']: close_bybit(coin,t['side'],t['amount'],100); send(f"🎯 {coin} TP2 closed"); del active[coin]
+                    elif cur<=t['tp2']: close_bybit(coin,t['side'],t['amount'],100); send(f"🎯 {coin} TP2"); del active[coin]
                     elif cur>=t['sl']: close_bybit(coin,t['side'],t['amount'],100); send(f"❌ {coin} SL capped 20%"); del active[coin]
     except Exception as e:
         print(f"Loop error: {e}"); time.sleep(3)
