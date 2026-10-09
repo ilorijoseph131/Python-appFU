@@ -1,4 +1,4 @@
-import os, ccxt, requests, time, threading
+import os, ccxt, requests, time, threading, hmac, hashlib
 from flask import Flask
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -8,20 +8,20 @@ BYBIT_SECRET = os.getenv("BYBIT_SECRET")
 
 app = Flask(__name__)
 @app.route('/')
-def home(): return "Bybit Demo Live - Fixed - OK"
+def home(): return "Bybit Demo Live - Fixed Final - OK"
 def run_web():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 threading.Thread(target=run_web, daemon=True).start()
+print("Web server started for Render")
 
-# === CORRECT FOR BYBIT DEMO (CCXT handles demo URL itself) ===
 exchange = ccxt.bybit({
     'apiKey': BYBIT_API_KEY.strip() if BYBIT_API_KEY else '',
     'secret': BYBIT_SECRET.strip() if BYBIT_SECRET else '',
     'enableRateLimit': True,
     'options': {'defaultType': 'unified'},
 })
-exchange.set_sandbox_mode(True) # THIS NOW POINTS TO DEMO in new CCXT
+exchange.set_sandbox_mode(True)
 
 try:
     exchange.load_markets()
@@ -38,23 +38,53 @@ WATCHLIST = ["BTC/USDT:USDT","ETH/USDT:USDT","SOL/USDT:USDT","DOGE/USDT:USDT","B
 SCAN_TFS = ['15m','30m','1h','2h']
 
 def send(msg):
-    try: requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": CHAT_ID, "text": msg[:3800]}, timeout=15)
-    except: pass
+    try:
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": CHAT_ID, "text": msg[:3800]}, timeout=15)
+        print(f"TG: {msg[:60]}")
+    except Exception as e:
+        print(f"Send fail: {e}")
 
 def fmt(p): return f"{p:.6f}" if p<0.01 else f"{p:.5f}" if p<1 else f"{p:.2f}"
 
 def get_balance():
+    # Try CCXT first
     try:
-        # Demo only supports UNIFIED accountType
         bal = exchange.fetch_balance(params={'accountType': 'UNIFIED'})
-        total = bal['total'].get('USDT',0) or bal['USDT']['total'] or 0
-        if not total: total = bal['total'].get('USDT',0) or list(bal['total'].values())[0] if bal['total'] else 0
-        if not total or float(total)==0:
-            raise Exception("0 balance")
-        return float(total)
+        total = bal['total'].get('USDT',0) or 0
+        if total and float(total)>0:
+            print(f"Balance via CCXT: {total}")
+            return float(total)
     except Exception as e:
-        print(f"Balance error: {e}")
-        return 0
+        print(f"CCXT Balance fail: {e}")
+
+    # FALLBACK Direct Bybit API - bypasses CCXT bug
+    try:
+        t = str(int(time.time()*1000))
+        recv = "5000"
+        params = "accountType=UNIFIED&coin=USDT"
+        param_str = t + BYBIT_API_KEY.strip() + recv + params
+        sign = hmac.new(BYBIT_SECRET.strip().encode(), param_str.encode(), hashlib.sha256).hexdigest()
+        headers = {
+            "X-BAPI-API-KEY": BYBIT_API_KEY.strip(),
+            "X-BAPI-SIGN": sign,
+            "X-BAPI-TIMESTAMP": t,
+            "X-BAPI-RECV-WINDOW": recv
+        }
+        r = requests.get(f"https://api-demo.bybit.com/v5/account/wallet-balance?{params}", headers=headers, timeout=10)
+        print(f"Direct API response: {r.text[:400]}")
+        j = r.json()
+        if j.get("retCode")==0 and j.get("result"):
+            coin_list = j["result"]["list"][0]["coin"]
+            for c in coin_list:
+                if c["coin"]=="USDT":
+                    bal = c["walletBalance"]
+                    print(f"Balance via Direct: {bal}")
+                    return float(bal)
+        else:
+            print(f"Direct API error: {j}")
+    except Exception as e:
+        print(f"Direct Balance fail: {e}")
+    return 0
 
 def get_ohlcv(s,tf,lim=100):
     try: return exchange.fetch_ohlcv(s,tf,limit=lim)
@@ -64,8 +94,9 @@ def get_price(s):
     except: return None
 def calc_rsi(c,p=14):
     if len(c)<p+1: return 50
-    g,l=[],[];
-    for i in range(1,len(c)): d=c[i]-c[i-1]; g.append(max(d,0)); l.append(max(-d,0))
+    g,l=[],[]
+    for i in range(1,len(c)):
+        d=c[i]-c[i-1]; g.append(max(d,0)); l.append(max(-d,0))
     ag=sum(g[-p:])/p; al=sum(l[-p:])/p
     return 70 if al==0 else 100-(100/(1+ag/al))
 def calc_ema(c,p=50):
@@ -156,7 +187,8 @@ while True:
             if txt=="/scan":
                 bal=get_balance()
                 if bal==0:
-                    send("❌ Balance 0 - API not working, check Bybit Demo keys"); continue
+                    send("❌ Balance 0 - check Render Logs for Direct API response")
+                    continue
                 if len(active)>=MAX_OPEN_TRADES: send(f"⏸️ Max {MAX_OPEN_TRADES} reached"); continue
                 cands=[]
                 for coin in WATCHLIST:
