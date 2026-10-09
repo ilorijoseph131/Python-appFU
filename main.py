@@ -8,35 +8,26 @@ BYBIT_SECRET = os.getenv("BYBIT_SECRET")
 
 app = Flask(__name__)
 @app.route('/')
-def home(): return "Bybit Demo Live - Frankfurt EU - OK"
-
+def home(): return "Bybit Demo Live - Fixed - OK"
 def run_web():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
-
 threading.Thread(target=run_web, daemon=True).start()
-print("Web server started for Render")
 
-# === FIXED FOR demo.bybit.com ===
+# === CORRECT FOR BYBIT DEMO (CCXT handles demo URL itself) ===
 exchange = ccxt.bybit({
     'apiKey': BYBIT_API_KEY.strip() if BYBIT_API_KEY else '',
     'secret': BYBIT_SECRET.strip() if BYBIT_SECRET else '',
     'enableRateLimit': True,
     'options': {'defaultType': 'unified'},
-    'urls': {
-        'api': {
-            'public': 'https://api-demo.bybit.com',
-            'private': 'https://api-demo.bybit.com',
-        }
-    }
 })
+exchange.set_sandbox_mode(True) # THIS NOW POINTS TO DEMO in new CCXT
 
 try:
     exchange.load_markets()
-    print("✅ Markets loaded - Render EU OK - Not blocked")
+    print("✅ Markets loaded")
 except Exception as e:
     print(f"❌ Load markets failed: {e}")
-    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": CHAT_ID, "text": f"❌ Bybit Demo still blocked: {e}"})
 
 PERCENT_PER_TRADE = 5
 MAX_LOSS_PERCENT_OF_MARGIN = 20
@@ -47,41 +38,36 @@ WATCHLIST = ["BTC/USDT:USDT","ETH/USDT:USDT","SOL/USDT:USDT","DOGE/USDT:USDT","B
 SCAN_TFS = ['15m','30m','1h','2h']
 
 def send(msg):
-    try:
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": CHAT_ID, "text": msg[:3800]}, timeout=15)
-        print(f"TG: {msg[:60]}")
-    except Exception as e:
-        print(f"Send fail: {e}")
+    try: requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": CHAT_ID, "text": msg[:3800]}, timeout=15)
+    except: pass
 
 def fmt(p): return f"{p:.6f}" if p<0.01 else f"{p:.5f}" if p<1 else f"{p:.2f}"
 
 def get_balance():
     try:
-        bal = exchange.fetch_balance()
-        total = bal['total'].get('USDT',0) or bal['free'].get('USDT',0)
-        if not total or total==0:
-            raise Exception("0 balance returned")
+        # Demo only supports UNIFIED accountType
+        bal = exchange.fetch_balance(params={'accountType': 'UNIFIED'})
+        total = bal['total'].get('USDT',0) or bal['USDT']['total'] or 0
+        if not total: total = bal['total'].get('USDT',0) or list(bal['total'].values())[0] if bal['total'] else 0
+        if not total or float(total)==0:
+            raise Exception("0 balance")
         return float(total)
     except Exception as e:
-        print(f"Balance error (will retry): {e}")
+        print(f"Balance error: {e}")
         return 0
 
 def get_ohlcv(s,tf,lim=100):
     try: return exchange.fetch_ohlcv(s,tf,limit=lim)
     except: return None
-
 def get_price(s):
     try: return float(exchange.fetch_ticker(s)['last'])
     except: return None
-
 def calc_rsi(c,p=14):
     if len(c)<p+1: return 50
-    g,l=[],[]
-    for i in range(1,len(c)):
-        d=c[i]-c[i-1]; g.append(max(d,0)); l.append(max(-d,0))
+    g,l=[],[];
+    for i in range(1,len(c)): d=c[i]-c[i-1]; g.append(max(d,0)); l.append(max(-d,0))
     ag=sum(g[-p:])/p; al=sum(l[-p:])/p
     return 70 if al==0 else 100-(100/(1+ag/al))
-
 def calc_ema(c,p=50):
     if len(c)<p: return c[-1]
     k=2/(p+1); ema=sum(c[:p])/p
@@ -98,10 +84,8 @@ def pro_smc(symbol):
         if not ohlcv or len(ohlcv)<60: continue
         closes=[x[4] for x in ohlcv]; highs=[x[2] for x in ohlcv]; lows=[x[3] for x in ohlcv]; vols=[x[5] for x in ohlcv]
         last=closes[-1]; ema50=calc_ema(closes,50); rsi=calc_rsi(closes,14)
-        vol_ma=sum(vols[-20:])/20
-        ph=max(highs[-30:-5]); pl=min(lows[-30:-5])
-        fvg_bull=highs[-3]<lows[-1]; fvg_bear=lows[-3]>highs[-1]
-        score=0
+        vol_ma=sum(vols[-20:])/20; ph=max(highs[-30:-5]); pl=min(lows[-30:-5])
+        fvg_bull=highs[-3]<lows[-1]; fvg_bear=lows[-3]>highs[-1]; score=0
         if last>ph:
             if last>ema50: score+=1
             if 50<rsi<75: score+=1
@@ -132,11 +116,9 @@ def calc_lev(entry, sl):
     lev = int((MAX_LOSS_PERCENT_OF_MARGIN/100)/dist)
     lev = max(MIN_LEVERAGE, min(lev, MAX_LEVERAGE))
     return lev, dist*100
-
 def set_lev(symbol, lev):
     try: exchange.set_leverage(lev, symbol)
     except: pass
-
 def open_bybit(symbol, side, lev, margin):
     try:
         set_lev(symbol, lev)
@@ -149,7 +131,6 @@ def open_bybit(symbol, side, lev, margin):
         return order, amount, price
     except Exception as e:
         send(f"❌ OPEN FAIL {symbol}: {e}"); return None,0,0
-
 def close_bybit(symbol, side, amount, perc=100):
     try:
         close_side='sell' if side=='LONG' else 'buy'
@@ -162,7 +143,7 @@ bal = get_balance()
 if bal>0:
     send(f"✅ BYBIT DEMO LIVE (Render EU)\nReal Bal ${bal:.2f} | 5% per trade | MaxLoss 20% | {MAX_OPEN_TRADES} max\nSend /scan")
 else:
-    send(f"⚠️ Connected but balance 0 - check API keys")
+    send(f"⚠️ Connected but balance 0 - will retry on /scan")
 
 last_id=0; last_check=0
 print("Bot loop started - waiting for /scan")
@@ -175,9 +156,7 @@ while True:
             if txt=="/scan":
                 bal=get_balance()
                 if bal==0:
-                    send("❌ Balance 0 - API not working, check Bybit Demo keys")
-                    continue
-                margin=bal*PERCENT_PER_TRADE/100
+                    send("❌ Balance 0 - API not working, check Bybit Demo keys"); continue
                 if len(active)>=MAX_OPEN_TRADES: send(f"⏸️ Max {MAX_OPEN_TRADES} reached"); continue
                 cands=[]
                 for coin in WATCHLIST:
