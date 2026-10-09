@@ -1,4 +1,4 @@
-import os, ccxt, requests, time, threading, hmac, hashlib
+import os, ccxt, requests, time, threading, hmac, hashlib, datetime
 from flask import Flask
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -8,12 +8,11 @@ BYBIT_SECRET = os.getenv("BYBIT_SECRET")
 
 app = Flask(__name__)
 @app.route('/')
-def home(): return "Bybit Demo Live - Fixed Final - OK"
+def home(): return "Bybit Demo Live - ZEC 5/6 + Daily PnL - OK"
 def run_web():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 threading.Thread(target=run_web, daemon=True).start()
-print("Web server started for Render")
 
 exchange = ccxt.bybit({
     'apiKey': BYBIT_API_KEY.strip() if BYBIT_API_KEY else '',
@@ -22,68 +21,39 @@ exchange = ccxt.bybit({
     'options': {'defaultType': 'unified'},
 })
 exchange.set_sandbox_mode(True)
-
-try:
-    exchange.load_markets()
-    print("✅ Markets loaded")
-except Exception as e:
-    print(f"❌ Load markets failed: {e}")
+try: exchange.load_markets()
+except Exception as e: print(f"Load markets fail: {e}")
 
 PERCENT_PER_TRADE = 5
 MAX_LOSS_PERCENT_OF_MARGIN = 20
 MAX_OPEN_TRADES = 3
 MAX_LEVERAGE = 10
 MIN_LEVERAGE = 5
-WATCHLIST = ["BTC/USDT:USDT","ETH/USDT:USDT","SOL/USDT:USDT","DOGE/USDT:USDT","BONK/USDT:USDT","AVAX/USDT:USDT"]
+WATCHLIST = ["BTC/USDT:USDT","ZEC/USDT:USDT","SOL/USDT:USDT","DOGE/USDT:USDT","BONK/USDT:USDT","AVAX/USDT:USDT"]
 SCAN_TFS = ['15m','30m','1h','2h']
 
 def send(msg):
-    try:
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": CHAT_ID, "text": msg[:3800]}, timeout=15)
-        print(f"TG: {msg[:60]}")
-    except Exception as e:
-        print(f"Send fail: {e}")
-
+    try: requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": CHAT_ID, "text": msg[:3800]}, timeout=15)
+    except: pass
 def fmt(p): return f"{p:.6f}" if p<0.01 else f"{p:.5f}" if p<1 else f"{p:.2f}"
 
 def get_balance():
-    # Try CCXT first
     try:
         bal = exchange.fetch_balance(params={'accountType': 'UNIFIED'})
         total = bal['total'].get('USDT',0) or 0
-        if total and float(total)>0:
-            print(f"Balance via CCXT: {total}")
-            return float(total)
-    except Exception as e:
-        print(f"CCXT Balance fail: {e}")
-
-    # FALLBACK Direct Bybit API - bypasses CCXT bug
+        if total and float(total)>0: return float(total)
+    except: pass
     try:
-        t = str(int(time.time()*1000))
-        recv = "5000"
-        params = "accountType=UNIFIED&coin=USDT"
+        t = str(int(time.time()*1000)); recv = "5000"; params = "accountType=UNIFIED&coin=USDT"
         param_str = t + BYBIT_API_KEY.strip() + recv + params
         sign = hmac.new(BYBIT_SECRET.strip().encode(), param_str.encode(), hashlib.sha256).hexdigest()
-        headers = {
-            "X-BAPI-API-KEY": BYBIT_API_KEY.strip(),
-            "X-BAPI-SIGN": sign,
-            "X-BAPI-TIMESTAMP": t,
-            "X-BAPI-RECV-WINDOW": recv
-        }
+        headers = {"X-BAPI-API-KEY": BYBIT_API_KEY.strip(),"X-BAPI-SIGN": sign,"X-BAPI-TIMESTAMP": t,"X-BAPI-RECV-WINDOW": recv}
         r = requests.get(f"https://api-demo.bybit.com/v5/account/wallet-balance?{params}", headers=headers, timeout=10)
-        print(f"Direct API response: {r.text[:400]}")
         j = r.json()
-        if j.get("retCode")==0 and j.get("result"):
-            coin_list = j["result"]["list"][0]["coin"]
-            for c in coin_list:
-                if c["coin"]=="USDT":
-                    bal = c["walletBalance"]
-                    print(f"Balance via Direct: {bal}")
-                    return float(bal)
-        else:
-            print(f"Direct API error: {j}")
-    except Exception as e:
-        print(f"Direct Balance fail: {e}")
+        if j.get("retCode")==0:
+            for c in j["result"]["list"][0]["coin"]:
+                if c["coin"]=="USDT": return float(c["walletBalance"])
+    except Exception as e: print(f"Balance fail {e}")
     return 0
 
 def get_ohlcv(s,tf,lim=100):
@@ -95,8 +65,7 @@ def get_price(s):
 def calc_rsi(c,p=14):
     if len(c)<p+1: return 50
     g,l=[],[]
-    for i in range(1,len(c)):
-        d=c[i]-c[i-1]; g.append(max(d,0)); l.append(max(-d,0))
+    for i in range(1,len(c)): d=c[i]-c[i-1]; g.append(max(d,0)); l.append(max(-d,0))
     ag=sum(g[-p:])/p; al=sum(l[-p:])/p
     return 70 if al==0 else 100-(100/(1+ag/al))
 def calc_ema(c,p=50):
@@ -145,23 +114,20 @@ def calc_lev(entry, sl):
     dist = abs(entry-sl)/entry
     if dist==0: return MIN_LEVERAGE, 1.5
     lev = int((MAX_LOSS_PERCENT_OF_MARGIN/100)/dist)
-    lev = max(MIN_LEVERAGE, min(lev, MAX_LEVERAGE))
-    return lev, dist*100
-def set_lev(symbol, lev):
-    try: exchange.set_leverage(lev, symbol)
+    return max(MIN_LEVERAGE, min(lev, MAX_LEVERAGE)), dist*100
+def set_lev(s,l):
+    try: exchange.set_leverage(l,s)
     except: pass
 def open_bybit(symbol, side, lev, margin):
     try:
-        set_lev(symbol, lev)
-        price=get_price(symbol)
+        set_lev(symbol, lev); price=get_price(symbol)
         if not price: return None,0,0
         amount = (margin*lev)/price
         amount = float(exchange.amount_to_precision(symbol, amount))
         order_side='buy' if side=='LONG' else 'sell'
         order=exchange.create_market_order(symbol, order_side, amount)
         return order, amount, price
-    except Exception as e:
-        send(f"❌ OPEN FAIL {symbol}: {e}"); return None,0,0
+    except Exception as e: send(f"❌ OPEN FAIL {symbol}: {e}"); return None,0,0
 def close_bybit(symbol, side, amount, perc=100):
     try:
         close_side='sell' if side=='LONG' else 'buy'
@@ -171,24 +137,51 @@ def close_bybit(symbol, side, amount, perc=100):
 
 active={}
 bal = get_balance()
+# Daily tracking
+WAT = datetime.timezone(datetime.timedelta(hours=1)) # Katsina WAT
+day_start_balance = bal if bal>0 else 50000
+day_start_date = datetime.datetime.now(WAT).date()
+last_daily_report_date = None
+daily_pnl_trades_closed = [] # list of realized
+
 if bal>0:
-    send(f"✅ BYBIT DEMO LIVE (Render EU)\nReal Bal ${bal:.2f} | 5% per trade | MaxLoss 20% | {MAX_OPEN_TRADES} max\nSend /scan")
+    send(f"✅ LIVE ZEC 5/6 + Daily PnL 00:00 WAT\nBal ${bal:.2f} | Daily report at midnight Katsina\nSend /scan | /bal")
 else:
-    send(f"⚠️ Connected but balance 0 - will retry on /scan")
+    send(f"⚠️ Balance 0 - will retry on /scan")
 
 last_id=0; last_check=0
-print("Bot loop started - waiting for /scan")
 while True:
     try:
+        # === DAILY 00:00 WAT REPORT ===
+        now_wat = datetime.datetime.now(WAT)
+        if now_wat.hour==0 and now_wat.minute<5: # within 00:00-00:04
+            today = now_wat.date()
+            if last_daily_report_date!= today:
+                cur_bal = get_balance()
+                # Calculate floating PnL of open trades
+                floating = 0
+                open_msg = ""
+                for coin,t in active.items():
+                    cur=get_price(coin)
+                    if cur:
+                        pnl_val = (cur-t['entry'])/t['entry']*t['margin']*t['leverage'] if t['side']=="LONG" else (t['entry']-cur)/t['entry']*t['margin']*t['leverage']
+                        floating+=pnl_val
+                        open_msg+=f"\n{coin} {t['side']} ${pnl_val:+.2f}"
+                daily_change = cur_bal - day_start_balance + floating
+                pct = (daily_change/day_start_balance*100) if day_start_balance>0 else 0
+                send(f"📊 DAILY PnL {today} 00:00 WAT\nStart ${day_start_balance:.2f} → Now ${cur_bal:.2f}\nFloating ${floating:+.2f}\nNet Daily {daily_change:+.2f} ({pct:+.2f}%)\nOpen: {len(active)}/{MAX_OPEN_TRADES}{open_msg}\n\nNew day started.")
+                day_start_balance = cur_bal
+                day_start_date = today
+                last_daily_report_date = today
+                daily_pnl_trades_closed = []
+
         res=requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={last_id+1}&timeout=20",timeout=25).json()
         for upd in res.get("result",[]):
             last_id=upd["update_id"]
             txt=upd.get("message",{}).get("text","").lower()
             if txt=="/scan":
                 bal=get_balance()
-                if bal==0:
-                    send("❌ Balance 0 - check Render Logs for Direct API response")
-                    continue
+                if bal==0: send("❌ Balance 0 - check Logs"); continue
                 if len(active)>=MAX_OPEN_TRADES: send(f"⏸️ Max {MAX_OPEN_TRADES} reached"); continue
                 cands=[]
                 for coin in WATCHLIST:
@@ -205,26 +198,30 @@ while True:
                     if o:
                         tr['amount']=a; tr['entry']=p; tr['margin']=margin; active[tr['symbol']]=tr
                         send(f"🟢 OPENED {tr['symbol']} {tr['side']} {tr['leverage']}x\nEntry {fmt(p)} SL {fmt(tr['sl'])} Dist {tr['dist_pct']:.2f}%\nMargin ${margin:.2f} MaxLoss ${margin*0.2:.2f}\nScore {tr['score']}/6 TF {tr['tf']}")
-            elif txt in ["/bal","/balance","/trades"]:
-                bal=get_balance(); msg=f"💰 Bal ${bal:.2f} Active {len(active)}/{MAX_OPEN_TRADES}\n"
+            elif txt in ["/bal","/balance","/trades","/pnl"]:
+                bal=get_balance()
+                floating=0; msg=f"💰 Bal ${bal:.2f} Active {len(active)}/{MAX_OPEN_TRADES}\nDay Start ${day_start_balance:.2f}\n"
                 for c,t in active.items():
                     cur=get_price(c)
                     if cur:
-                        pnl=(cur-t['entry'])/t['entry']*100*t['leverage'] if t['side']=="LONG" else (t['entry']-cur)/t['entry']*100*t['leverage']
-                        msg+=f"{c} {t['side']} {pnl:+.1f}%\n"
-                send(msg if active else msg+"No active. Send /scan")
+                        pnl_pct=(cur-t['entry'])/t['entry']*100*t['leverage'] if t['side']=="LONG" else (t['entry']-cur)/t['entry']*100*t['leverage']
+                        pnl_val = t['margin']*pnl_pct/100
+                        floating+=pnl_val
+                        msg+=f"{c} {t['side']} {pnl_pct:+.1f}% (${pnl_val:+.2f})\n"
+                daily = bal - day_start_balance + floating
+                msg+=f"Float ${floating:+.2f} | Daily Net ${daily:+.2f}\nWatch: ZEC,BTC,SOL,DOGE,BONK,AVAX"
+                send(msg if active else msg+f"\nNo active. Send /scan")
+
         if time.time()-last_check>120:
             last_check=time.time()
             for coin,t in list(active.items()):
                 cur=get_price(coin)
                 if not cur: continue
                 if t['side']=="LONG":
-                    if not t['be_done'] and cur>=t['tp1']: close_bybit(coin,t['side'],t['amount'],50); send(f"🔒 {coin} TP1"); t['be_done']=True; t['amount']*=0.5
-                    elif cur>=t['tp2']: close_bybit(coin,t['side'],t['amount'],100); send(f"🎯 {coin} TP2"); del active[coin]
+                    if not t['be_done'] and cur>=t['tp1']: close_bybit(coin,t['side'],t['amount'],50); send(f"🔒 {coin} TP1 +50%"); t['be_done']=True; t['amount']*=0.5
+                    elif cur>=t['tp2']: close_bybit(coin,t['side'],t['amount'],100); send(f"🎯 {coin} TP2 closed"); del active[coin]
                     elif cur<=t['sl']: close_bybit(coin,t['side'],t['amount'],100); send(f"❌ {coin} SL 20% capped"); del active[coin]
                 else:
-                    if not t['be_done'] and cur<=t['tp1']: close_bybit(coin,t['side'],t['amount'],50); send(f"🔒 {coin} TP1"); t['be_done']=True; t['amount']*=0.5
-                    elif cur<=t['tp2']: close_bybit(coin,t['side'],t['amount'],100); send(f"🎯 {coin} TP2"); del active[coin]
-                    elif cur>=t['sl']: close_bybit(coin,t['side'],t['amount'],100); send(f"❌ {coin} SL 20% capped"); del active[coin]
-    except Exception as e:
-        print(f"Loop error: {e}"); time.sleep(3)
+                    if not t['be_done'] and cur<=t['tp1']: close_bybit(coin,t['side'],t['amount'],50); send(f"🔒 {coin} TP1 +50%"); t['be_done']=True; t['amount']*=0.5
+                    elif cur<=t['tp2']: close_bybit(coin,t['side'],t['amount'],100); send(f"🎯 {coin} TP2 closed"); del active[coin]
+                    elif cur>=t['sl']: close_bybit(coin,t['side'],t['amount'],100); send(f"❌ {coin} SL 20% capped"); del active
