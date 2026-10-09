@@ -17,13 +17,19 @@ def run_web():
 threading.Thread(target=run_web, daemon=True).start()
 print("Web server started for Render")
 
+# === FIXED FOR demo.bybit.com ===
 exchange = ccxt.bybit({
-    'apiKey': BYBIT_API_KEY,
-    'secret': BYBIT_SECRET,
+    'apiKey': BYBIT_API_KEY.strip() if BYBIT_API_KEY else '',
+    'secret': BYBIT_SECRET.strip() if BYBIT_SECRET else '',
     'enableRateLimit': True,
-    'options': {'defaultType': 'linear'}
+    'options': {'defaultType': 'unified'},
+    'urls': {
+        'api': {
+            'public': 'https://api-demo.bybit.com',
+            'private': 'https://api-demo.bybit.com',
+        }
+    }
 })
-exchange.set_sandbox_mode(True)
 
 try:
     exchange.load_markets()
