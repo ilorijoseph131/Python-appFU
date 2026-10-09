@@ -224,4 +224,6 @@ while True:
                 else:
                     if not t['be_done'] and cur<=t['tp1']: close_bybit(coin,t['side'],t['amount'],50); send(f"🔒 {coin} TP1 +50%"); t['be_done']=True; t['amount']*=0.5
                     elif cur<=t['tp2']: close_bybit(coin,t['side'],t['amount'],100); send(f"🎯 {coin} TP2 closed"); del active[coin]
-                    elif cur>=t['sl']: close_bybit(coin,t['side'],t['amount'],100); send(f"❌ {coin} SL 20% capped"); del active
+                    elif cur>=t['sl']: close_bybit(coin,t['side'],t['amount'],100); send(f"❌ {coin} SL 20% capped"); del active[coin]
+    except Exception as e:
+        print(f"Loop error: {e}"); time.sleep(3)
