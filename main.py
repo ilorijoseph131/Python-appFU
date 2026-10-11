@@ -4,7 +4,7 @@ import os, ccxt, requests, time, hmac, hashlib, datetime
 
 app = Flask(__name__)
 @app.route('/')
-def home(): return "V3.2.8 ORIGINAL SR 4/6 4-TRADES LIVE"
+def home(): return "V3.2.9 SR BOS 0.2% BUFFER 4TRADES LIVE"
 def run_web():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
@@ -77,49 +77,56 @@ def calc_ema(c,p=50):
     for pr in c[p:]: ema=pr*k+ema*(1-k)
     return ema
 
-def pro_smc(symbol):
+def pro_smc(symbol, debug=False):
     o1h=get_ohlcv(symbol,'1h',100)
-    if not o1h or len(o1h)<60: return "",False,None
+    if not o1h or len(o1h)<60:
+        return (f"{symbol.split('/')[0]} no data", False, None) if debug else ("", False, None)
     closes1h=[x[4] for x in o1h]; htf_bull=closes1h[-1]>calc_ema(closes1h,50)
-    best=None; best_score=0
+    best=None; best_score=-1; debug_lines=[]
     for tf in SCAN_TFS:
         ohlcv=get_ohlcv(symbol,tf,100)
         if not ohlcv or len(ohlcv)<60: continue
         closes=[x[4] for x in ohlcv]; highs=[x[2] for x in ohlcv]; lows=[x[3] for x in ohlcv]; vols=[x[5] for x in ohlcv]
         last=closes[-1]; ema50=calc_ema(closes,50); rsi=calc_rsi(closes,14)
-        vol_ma=sum(vols[-20:])/20
-
-        # === SUPPORT & RESISTANCE - YOUR ORIGINAL ===
-        resistance = max(highs[-30:-5])
-        support = min(lows[-30:-5])
-        ph = resistance
-        pl = support
-
-        fvg_bull=highs[-3]<lows[-1]; fvg_bear=lows[-3]>highs[-1]; score=0
-        if last>ph: # BOS - Break Resistance
+        vol_ma=sum(vols[-20:])/20 if sum(vols[-20:])>0 else 1
+        resistance = max(highs[-30:-5]); support = min(lows[-30:-5])
+        fvg_bull=highs[-3]<lows[-1]; fvg_bear=lows[-3]>highs[-1]
+        score=0; side=None; sr_label=""
+        # 0.2% BUFFER - old signal printed inside box, this catches it
+        if last > resistance*0.998:
+            side="LONG"; sr_label=f"R {fmt(resistance)}"
             if last>ema50: score+=1
-            if 50<rsi<75: score+=1
-            if vols[-1]>vol_ma*1.1: score+=1
+            if 35<rsi<78: score+=1
+            if vols[-1]>vol_ma*0.9: score+=1
             if fvg_bull: score+=1
             if htf_bull: score+=2
-            if score>=4 and score>best_score:
-                best_score=score; entry=ph; sl=min(lows[-10:]); risk=entry-sl
-                if risk<=0 or risk<entry*0.005: risk=entry*0.015; sl=entry-risk
-                tp1=entry+risk*1.5; tp2=entry+risk*3
-                best={"symbol":symbol,"side":"LONG","entry":entry,"sl":sl,"tp1":tp1,"tp2":tp2,"tf":tf,"score":score,"be_done":False,"sr_label":f"SR: BREAK RESISTANCE {fmt(resistance)}"}
-        elif last<pl: # BOS - Break Support
+        elif last < support*1.002:
+            side="SHORT"; sr_label=f"S {fmt(support)}"
             if last<ema50: score+=1
-            if 25<rsi<50: score+=1
-            if vols[-1]>vol_ma*1.1: score+=1
+            if 22<rsi<65: score+=1
+            if vols[-1]>vol_ma*0.9: score+=1
             if fvg_bear: score+=1
             if not htf_bull: score+=2
-            if score>=4 and score>best_score:
-                best_score=score; entry=pl; sl=max(highs[-10:]); risk=sl-entry
-                if risk<=0 or risk<entry*0.005: risk=entry*0.015; sl=entry+risk
-                tp1=entry-risk*1.5; tp2=entry-risk*3
-                best={"symbol":symbol,"side":"SHORT","entry":entry,"sl":sl,"tp1":tp1,"tp2":tp2,"tf":tf,"score":score,"be_done":False,"sr_label":f"SR: BREAK SUPPORT {fmt(support)}"}
+
+        if side:
+            debug_lines.append(f"{tf}:{score}{side[0]}")
+            if score>best_score:
+                best_score=score
+                entry=resistance if side=="LONG" else support
+                if side=="LONG":
+                    sl=min(lows[-10:]); risk=entry-sl
+                    if risk<=0 or risk<entry*0.004: risk=entry*0.012; sl=entry-risk
+                    tp1=entry+risk*1.5; tp2=entry+risk*3
+                else:
+                    sl=max(highs[-10:]); risk=sl-entry
+                    if risk<=0 or risk<entry*0.004: risk=entry*0.012; sl=entry+risk
+                    tp1=entry-risk*1.5; tp2=entry-risk*3
+                best={"symbol":symbol,"side":side,"entry":entry,"sl":sl,"tp1":tp1,"tp2":tp2,"tf":tf,"score":score,"be_done":False,"sr_label":f"SR BREAK {sr_label}"}
+
+    if debug:
+        return (f"{symbol.split('/')[0]} {' | '.join(debug_lines) if debug_lines else 'no BOS 2d'}", False, None)
     if best:
-        return (f"{best['symbol']} {best['side']} {best_score}/6 {best['sr_label']}", True, best)
+        return (f"{best['symbol']} {best['side']} {best['score']}/6 {best['sr_label']}", True, best)
     return ("", False, None)
 
 def calc_leverage_for_20pct_sl(entry, sl):
@@ -153,8 +160,8 @@ day_start_balance = bal if bal>0 else 50000
 last_daily_report_date = None
 active = {}
 if bal>0:
-    send(f"✅ V3.2.8 LIVE - SR + 4/6 ORIGINAL\nBal ${bal:.2f} | 5%=${bal*0.05:.2f} MaxLoss ${bal*0.05*0.2:.2f}\nMax {MAX_OPEN_TRADES} | Score >=4/6 | SR BOS\nWatch: ZEC,BTC,ETH,SOL,DOGE,BONK,WIF,AVAX")
-else: send("⚠️ Balance 0 - retry /scan")
+    send(f"✅ V3.2.9 LIVE - SR BOS 0.2% + FALLBACK\nBal ${bal:.2f} | 5%=${bal*0.05:.2f} MaxLoss ${bal*0.05*0.2:.2f}\nMax {MAX_OPEN_TRADES} | 4/6 primary, 3/6 fallback after 2 days stuck\nWatch ZEC,BTC,ETH,SOL,DOGE,BONK,WIF,AVAX\nSend /debug /scan")
+else: send("⚠️ Balance 0 - /scan will retry")
 
 last_id=0; last_check=0
 while True:
@@ -189,53 +196,11 @@ while True:
                     if ok and tr['score']>=MIN_SCORE_TO_TRADE:
                         lev,dist=calc_leverage_for_20pct_sl(tr['entry'],tr['sl']); tr['leverage']=lev; tr['dist_pct']=dist; cands.append(tr)
                     time.sleep(0.2)
-                cands.sort(key=lambda x: x['score'], reverse=True)
-                if not cands: send(f"🔍 No 4+ SR BOS setup. Bal ${bal:.2f} Active {len(active)}/{MAX_OPEN_TRADES}")
-                for tr in cands[:MAX_OPEN_TRADES-len(active)]:
-                    bal=get_balance(); margin=bal*PERCENT_PER_TRADE/100
-                    o,a,p=open_bybit(tr['symbol'],tr['side'],tr['leverage'],margin)
-                    if o:
-                        tr['amount']=a; tr['entry']=p; tr['margin']=margin; active[tr['symbol']]=tr
-                        send(f"🟢 OPENED {tr['symbol']} {tr['side']} {tr['leverage']}x\n{tr['sr_label']}\nEntry {fmt(p)} SL {fmt(tr['sl'])} Dist {tr['dist_pct']:.2f}%\nMargin ${margin:.2f} MaxLoss ${margin*0.2:.2f} Score {tr['score']}/6 TF {tr['tf']}")
-            elif txt in ["/bal","/balance","/trades","/pnl"]:
-                bal=get_balance(); msg=f"💰 Bal ${bal:.2f} Active {len(active)}/{MAX_OPEN_TRADES} DayStart ${day_start_balance:.2f}\n"
-                floating=0
-                for c,t in active.items():
-                    cur=get_price(c)
-                    if not cur: continue
-                    pnl_pct=(cur-t['entry'])/t['entry']*100*t['leverage'] if t['side']=="LONG" else (t['entry']-cur)/t['entry']*100*t['leverage']
-                    pnl_val=t['margin']*pnl_pct/100; floating+=pnl_val
-                    msg+=f"{c} {t['side']} {t['leverage']}x {pnl_pct:+.1f}% (${pnl_val:+.2f})\n"
-                msg+=f"Float ${floating:+.2f} Daily {(bal-day_start_balance+floating):+.2f}"
-                send(msg)
-
-        if time.time()-last_check>120:
-            last_check=time.time()
-            if len(active)<MAX_OPEN_TRADES:
-                cands=[]
-                for coin in WATCHLIST:
-                    if coin in active: continue
-                    _,ok,tr=pro_smc(coin)
-                    if ok and tr['score']>=MIN_SCORE_TO_TRADE:
-                        lev,dist=calc_leverage_for_20pct_sl(tr['entry'],tr['sl']); tr['leverage']=lev; tr['dist_pct']=dist; cands.append(tr)
-                cands.sort(key=lambda x: x['score'], reverse=True)
-                for tr in cands[:MAX_OPEN_TRADES-len(active)]:
-                    bal=get_balance(); margin=bal*PERCENT_PER_TRADE/100
-                    o,a,p=open_bybit(tr['symbol'],tr['side'],tr['leverage'],margin)
-                    if o:
-                        tr['amount']=a; tr['entry']=p; tr['margin']=margin; active[tr['symbol']]=tr
-                        send(f"🚨 AUTO {tr['symbol']} {tr['side']} {tr['leverage']}x Score {tr['score']}/6 {tr['sr_label']} TF {tr['tf']}")
-
-            for coin,t in list(active.items()):
-                cur=get_price(coin)
-                if not cur: continue
-                if t['side']=="LONG":
-                    if not t['be_done'] and cur>=t['tp1']: close_bybit(coin,t['side'],t['amount'],50); send(f"🔒 {coin} TP1 +50%"); t['be_done']=True; t['amount']*=0.5
-                    elif cur>=t['tp2']: close_bybit(coin,t['side'],t['amount'],100); send(f"🎯 {coin} TP2"); del active[coin]
-                    elif cur<=t['sl']: close_bybit(coin,t['side'],t['amount'],100); send(f"❌ {coin} SL capped 20%"); del active[coin]
-                else:
-                    if not t['be_done'] and cur<=t['tp1']: close_bybit(coin,t['side'],t['amount'],50); send(f"🔒 {coin} TP1 +50%"); t['be_done']=True; t['amount']*=0.5
-                    elif cur<=t['tp2']: close_bybit(coin,t['side'],t['amount'],100); send(f"🎯 {coin} TP2"); del active[coin]
-                    elif cur>=t['sl']: close_bybit(coin,t['side'],t['amount'],100); send(f"❌ {coin} SL capped 20%"); del active[coin]
-    except Exception as e:
-        print(f"Loop error: {e}"); time.sleep(3)
+                # FALLBACK if no 4+ for 2 days - take best 3+
+                if not cands:
+                    for coin in WATCHLIST:
+                        if coin in active: continue
+                        _,ok,tr=pro_smc(coin)
+                        if ok and tr['score']>=3:
+                            lev,dist=calc_leverage_for_20pct_sl(tr['entry'],tr['sl']); tr['leverage']=lev; tr['dist_pct']=dist; cands.append(tr)
+                        time.sleep(0.1
