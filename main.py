@@ -203,4 +203,67 @@ while True:
                         _,ok,tr=pro_smc(coin)
                         if ok and tr['score']>=3:
                             lev,dist=calc_leverage_for_20pct_sl(tr['entry'],tr['sl']); tr['leverage']=lev; tr['dist_pct']=dist; cands.append(tr)
-                        time.sleep(0.1
+                        time.sleep(0.1)
+                    if cands:
+                        send(f"⚠️ No 4+ for 2 days, taking fallback 3+ - {len(cands)} setup(s)")
+                cands.sort(key=lambda x: x['score'], reverse=True)
+                if not cands: send(f"🔍 No 4+/3+ SR BOS. Bal ${bal:.2f} Active {len(active)}/{MAX_OPEN_TRADES} Try /debug")
+                for tr in cands[:MAX_OPEN_TRADES-len(active)]:
+                    bal=get_balance(); margin=bal*PERCENT_PER_TRADE/100
+                    o,a,p=open_bybit(tr['symbol'],tr['side'],tr['leverage'],margin)
+                    if o:
+                        tr['amount']=a; tr['entry']=p; tr['margin']=margin; active[tr['symbol']]=tr
+                        send(f"🟢 OPENED {tr['symbol']} {tr['side']} {tr['leverage']}x Score {tr['score']}/6 TF {tr['tf']}\n{tr['sr_label']}\nEntry {fmt(p)} SL {fmt(tr['sl'])} Dist {tr['dist_pct']:.2f}%\nMargin ${margin:.2f} MaxLoss ${margin*0.2:.2f}")
+            elif txt=="/debug":
+                bal=get_balance(); msg=f"DEBUG Bal ${bal:.2f} Min {MIN_SCORE_TO_TRADE}/6 primary\n"
+                for coin in WATCHLIST:
+                    d,_,_=pro_smc(coin, debug=True); msg+=d+"\n"; time.sleep(0.2)
+                send(msg)
+            elif txt in ["/bal","/balance","/trades","/pnl"]:
+                bal=get_balance(); msg=f"💰 Bal ${bal:.2f} Active {len(active)}/{MAX_OPEN_TRADES} DayStart ${day_start_balance:.2f}\n"
+                floating=0
+                for c,t in active.items():
+                    cur=get_price(c)
+                    if not cur: continue
+                    pnl_pct=(cur-t['entry'])/t['entry']*100*t['leverage'] if t['side']=="LONG" else (t['entry']-cur)/t['entry']*100*t['leverage']
+                    pnl_val=t['margin']*pnl_pct/100; floating+=pnl_val
+                    msg+=f"{c} {t['side']} {t['leverage']}x {pnl_pct:+.1f}% (${pnl_val:+.2f})\n"
+                msg+=f"Float ${floating:+.2f} Daily {(bal-day_start_balance+floating):+.2f}"
+                send(msg)
+
+        if time.time()-last_check>120:
+            last_check=time.time()
+            if len(active)<MAX_OPEN_TRADES:
+                cands=[]
+                for coin in WATCHLIST:
+                    if coin in active: continue
+                    _,ok,tr=pro_smc(coin)
+                    if ok and tr['score']>=MIN_SCORE_TO_TRADE:
+                        lev,dist=calc_leverage_for_20pct_sl(tr['entry'],tr['sl']); tr['leverage']=lev; tr['dist_pct']=dist; cands.append(tr)
+                if not cands: # fallback in auto
+                    for coin in WATCHLIST:
+                        if coin in active: continue
+                        _,ok,tr=pro_smc(coin)
+                        if ok and tr['score']>=3:
+                            lev,dist=calc_leverage_for_20pct_sl(tr['entry'],tr['sl']); tr['leverage']=lev; tr['dist_pct']=dist; cands.append(tr)
+                cands.sort(key=lambda x: x['score'], reverse=True)
+                for tr in cands[:MAX_OPEN_TRADES-len(active)]:
+                    bal=get_balance(); margin=bal*PERCENT_PER_TRADE/100
+                    o,a,p=open_bybit(tr['symbol'],tr['side'],tr['leverage'],margin)
+                    if o:
+                        tr['amount']=a; tr['entry']=p; tr['margin']=margin; active[tr['symbol']]=tr
+                        send(f"🚨 AUTO {tr['symbol']} {tr['side']} {tr['leverage']}x Score {tr['score']}/6 {tr['sr_label']} TF {tr['tf']}")
+
+            for coin,t in list(active.items()):
+                cur=get_price(coin)
+                if not cur: continue
+                if t['side']=="LONG":
+                    if not t['be_done'] and cur>=t['tp1']: close_bybit(coin,t['side'],t['amount'],50); send(f"🔒 {coin} TP1 +50%"); t['be_done']=True; t['amount']*=0.5
+                    elif cur>=t['tp2']: close_bybit(coin,t['side'],t['amount'],100); send(f"🎯 {coin} TP2"); del active[coin]
+                    elif cur<=t['sl']: close_bybit(coin,t['side'],t['amount'],100); send(f"❌ {coin} SL 20% cap"); del active[coin]
+                else:
+                    if not t['be_done'] and cur<=t['tp1']: close_bybit(coin,t['side'],t['amount'],50); send(f"🔒 {coin} TP1 +50%"); t['be_done']=True; t['amount']*=0.5
+                    elif cur<=t['tp2']: close_bybit(coin,t['side'],t['amount'],100); send(f"🎯 {coin} TP2"); del active[coin]
+                    elif cur>=t['sl']: close_bybit(coin,t['side'],t['amount'],100); send(f"❌ {coin} SL 20% cap"); del active[coin]
+    except Exception as e:
+        print(f"Loop error: {e}"); time.sleep(3)
