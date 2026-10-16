@@ -4,7 +4,7 @@ import os, ccxt, requests, time, hmac, hashlib, datetime
 
 app = Flask(__name__)
 @app.route('/')
-def home(): return "V3.2.9 SR BOS 0.2% BUFFER 4TRADES LIVE"
+def home(): return "V3.2.10 DEMO FIX SR BOS LIVE"
 def run_web():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
@@ -15,15 +15,25 @@ CHAT_ID = os.getenv("CHAT_ID","").strip()
 BYBIT_API_KEY = os.getenv("BYBIT_API_KEY","").strip()
 BYBIT_SECRET = os.getenv("BYBIT_SECRET","").strip()
 
+# === BYBIT DEMO FIX: use api-demo.bybit.com, NOT testnet ===
+# set_sandbox_mode(True) points to testnet.bybit.com and breaks Demo keys - DO NOT USE IT
 exchange = ccxt.bybit({
     'apiKey': BYBIT_API_KEY,
     'secret': BYBIT_SECRET,
     'enableRateLimit': True,
     'options': {'defaultType': 'unified'},
+    'urls': {
+        'api': {
+            'public': 'https://api-demo.bybit.com',
+            'private': 'https://api-demo.bybit.com',
+        }
+    }
 })
-exchange.set_sandbox_mode(True)
-try: exchange.load_markets()
-except: pass
+try:
+    exchange.load_markets()
+    print("load_markets OK demo")
+except Exception as e:
+    print(f"load_markets fail: {e}")
 
 PERCENT_PER_TRADE = 5
 MAX_LOSS_PERCENT_OF_MARGIN = 20
@@ -46,7 +56,8 @@ def get_balance():
         bal = exchange.fetch_balance(params={'accountType': 'UNIFIED'})
         total = bal['total'].get('USDT',0) or 0
         if total and float(total)>0: return float(total)
-    except: pass
+    except Exception as e:
+        print(f"fetch_balance fail: {e}")
     try:
         t = str(int(time.time()*1000)); recv="5000"; params="accountType=UNIFIED&coin=USDT"
         param_str = t + BYBIT_API_KEY + recv + params
@@ -57,11 +68,13 @@ def get_balance():
         if j.get("retCode")==0:
             for c in j["result"]["list"][0]["coin"]:
                 if c["coin"]=="USDT": return float(c["walletBalance"])
-    except: pass
+    except Exception as e:
+        print(f"manual balance fail: {e}")
     return 0
 def get_ohlcv(s,tf,lim=100):
     try: return exchange.fetch_ohlcv(s,tf,limit=lim)
-    except: return None
+    except Exception as e:
+        print(f"ohlcv fail {s} {tf}: {e}"); return None
 def get_price(s):
     try: return float(exchange.fetch_ticker(s)['last'])
     except: return None
@@ -92,7 +105,6 @@ def pro_smc(symbol, debug=False):
         resistance = max(highs[-30:-5]); support = min(lows[-30:-5])
         fvg_bull=highs[-3]<lows[-1]; fvg_bear=lows[-3]>highs[-1]
         score=0; side=None; sr_label=""
-        # 0.2% BUFFER - old signal printed inside box, this catches it
         if last > resistance*0.998:
             side="LONG"; sr_label=f"R {fmt(resistance)}"
             if last>ema50: score+=1
@@ -107,7 +119,6 @@ def pro_smc(symbol, debug=False):
             if vols[-1]>vol_ma*0.9: score+=1
             if fvg_bear: score+=1
             if not htf_bull: score+=2
-
         if side:
             debug_lines.append(f"{tf}:{score}{side[0]}")
             if score>best_score:
@@ -122,9 +133,8 @@ def pro_smc(symbol, debug=False):
                     if risk<=0 or risk<entry*0.004: risk=entry*0.012; sl=entry+risk
                     tp1=entry-risk*1.5; tp2=entry-risk*3
                 best={"symbol":symbol,"side":side,"entry":entry,"sl":sl,"tp1":tp1,"tp2":tp2,"tf":tf,"score":score,"be_done":False,"sr_label":f"SR BREAK {sr_label}"}
-
     if debug:
-        return (f"{symbol.split('/')[0]} {' | '.join(debug_lines) if debug_lines else 'no BOS 2d'}", False, None)
+        return (f"{symbol.split('/')[0]} {' | '.join(debug_lines) if debug_lines else 'no BOS'}", False, None)
     if best:
         return (f"{best['symbol']} {best['side']} {best['score']}/6 {best['sr_label']}", True, best)
     return ("", False, None)
@@ -134,34 +144,42 @@ def calc_leverage_for_20pct_sl(entry, sl):
     if dist_pct==0: return MIN_LEVERAGE, 0
     max_lev = (MAX_LOSS_PERCENT_OF_MARGIN/100) / dist_pct
     return max(MIN_LEVERAGE, min(int(max_lev), MAX_LEVERAGE)), dist_pct*100
-def set_lev(symbol, lev):
-    try: exchange.set_leverage(lev, symbol)
-    except: pass
+
 def open_bybit(symbol, side, lev, margin):
     try:
-        set_lev(symbol, lev); price=get_price(symbol)
-        if not price: return None,0,0
+        try: exchange.set_leverage(lev, symbol, params={'marginMode':'cross'})
+        except:
+            try: exchange.set_leverage(lev, symbol)
+            except Exception as e: send(f"⚠️ lev fail {symbol}: {e}")
+        price=get_price(symbol)
+        if not price: send(f"❌ no price {symbol}"); return None,0,0
         amount = (margin * lev) / price
+        if amount*price < 10:
+            send(f"❌ amount too small {symbol} ${amount*price:.2f}"); return None,0,0
         amount = float(exchange.amount_to_precision(symbol, amount))
         order_side='buy' if side=='LONG' else 'sell'
-        order=exchange.create_market_order(symbol, order_side, amount)
+        order=exchange.create_market_order(symbol, order_side, amount, params={'positionIdx':0})
         return order, amount, price
     except Exception as e:
-        send(f"❌ OPEN FAIL {symbol}: {e}"); return None,0,0
+        send(f"❌ OPEN FAIL {symbol} lev {lev} margin {margin}: {e}")
+        print(f"OPEN FAIL {symbol}: {e}")
+        return None,0,0
+
 def close_bybit(symbol, side, amount, perc=100):
     try:
         close_side='sell' if side=='LONG' else 'buy'
         amt=float(exchange.amount_to_precision(symbol, amount*perc/100))
-        exchange.create_market_order(symbol, close_side, amt, params={'reduceOnly':True})
-    except Exception as e: send(f"❌ CLOSE FAIL {symbol}: {e}")
+        exchange.create_market_order(symbol, close_side, amt, params={'reduceOnly':True, 'positionIdx':0})
+    except Exception as e:
+        send(f"❌ CLOSE FAIL {symbol}: {e}")
 
 bal = get_balance()
 day_start_balance = bal if bal>0 else 50000
 last_daily_report_date = None
 active = {}
 if bal>0:
-    send(f"✅ V3.2.9 LIVE - SR BOS 0.2% + FALLBACK\nBal ${bal:.2f} | 5%=${bal*0.05:.2f} MaxLoss ${bal*0.05*0.2:.2f}\nMax {MAX_OPEN_TRADES} | 4/6 primary, 3/6 fallback after 2 days stuck\nWatch ZEC,BTC,ETH,SOL,DOGE,BONK,WIF,AVAX\nSend /debug /scan")
-else: send("⚠️ Balance 0 - /scan will retry")
+    send(f"✅ V3.2.10 LIVE - DEMO URL FIXED\nBal ${bal:.2f} | 5%=${bal*0.05:.2f} MaxLoss ${bal*0.05*0.2:.2f}\nMax {MAX_OPEN_TRADES} | 4/6 primary, 3/6 fallback\nWatch ZEC,BTC,ETH,SOL,DOGE,BONK,WIF,AVAX\nSend /test /debug /scan")
+else: send("⚠️ Balance 0 - check USDT in Unified Trading Account")
 
 last_id=0; last_check=0
 while True:
@@ -185,9 +203,22 @@ while True:
         for upd in res.get("result",[]):
             last_id=upd["update_id"]
             txt=upd.get("message",{}).get("text","").lower()
-            if txt=="/scan":
+            if txt=="/test":
+                try:
+                    exchange.set_leverage(5, "BTC/USDT:USDT")
+                    send("✅ set_leverage OK - Demo key works")
+                    price=get_price("BTC/USDT:USDT")
+                    amount=float(exchange.amount_to_precision("BTC/USDT:USDT", (10*5)/price))
+                    send(f"Try buy {amount} BTC @ {price}")
+                    o=exchange.create_market_order("BTC/USDT:USDT","buy",amount, params={'positionIdx':0})
+                    send(f"✅ TEST ORDER OK {o.get('id')}")
+                    exchange.create_market_order("BTC/USDT:USDT","sell",amount, params={'reduceOnly':True, 'positionIdx':0})
+                    send("✅ TEST CLOSE OK - Bybit Demo allows trading")
+                except Exception as e:
+                    send(f"❌ TEST FAIL: {e}")
+            elif txt=="/scan":
                 bal=get_balance()
-                if bal==0: send("❌ Balance 0"); continue
+                if bal==0: send("❌ Balance 0 - USDT not in Unified"); continue
                 if len(active)>=MAX_OPEN_TRADES: send(f"⏸️ Max {MAX_OPEN_TRADES} Bal ${bal:.2f}"); continue
                 cands=[]
                 for coin in WATCHLIST:
@@ -196,7 +227,6 @@ while True:
                     if ok and tr['score']>=MIN_SCORE_TO_TRADE:
                         lev,dist=calc_leverage_for_20pct_sl(tr['entry'],tr['sl']); tr['leverage']=lev; tr['dist_pct']=dist; cands.append(tr)
                     time.sleep(0.2)
-                # FALLBACK if no 4+ for 2 days - take best 3+
                 if not cands:
                     for coin in WATCHLIST:
                         if coin in active: continue
@@ -204,8 +234,7 @@ while True:
                         if ok and tr['score']>=3:
                             lev,dist=calc_leverage_for_20pct_sl(tr['entry'],tr['sl']); tr['leverage']=lev; tr['dist_pct']=dist; cands.append(tr)
                         time.sleep(0.1)
-                    if cands:
-                        send(f"⚠️ No 4+ for 2 days, taking fallback 3+ - {len(cands)} setup(s)")
+                    if cands: send(f"⚠️ No 4+, taking fallback 3+ - {len(cands)} setup(s)")
                 cands.sort(key=lambda x: x['score'], reverse=True)
                 if not cands: send(f"🔍 No 4+/3+ SR BOS. Bal ${bal:.2f} Active {len(active)}/{MAX_OPEN_TRADES} Try /debug")
                 for tr in cands[:MAX_OPEN_TRADES-len(active)]:
@@ -215,7 +244,7 @@ while True:
                         tr['amount']=a; tr['entry']=p; tr['margin']=margin; active[tr['symbol']]=tr
                         send(f"🟢 OPENED {tr['symbol']} {tr['side']} {tr['leverage']}x Score {tr['score']}/6 TF {tr['tf']}\n{tr['sr_label']}\nEntry {fmt(p)} SL {fmt(tr['sl'])} Dist {tr['dist_pct']:.2f}%\nMargin ${margin:.2f} MaxLoss ${margin*0.2:.2f}")
             elif txt=="/debug":
-                bal=get_balance(); msg=f"DEBUG Bal ${bal:.2f} Min {MIN_SCORE_TO_TRADE}/6 primary\n"
+                bal=get_balance(); msg=f"DEBUG Bal ${bal:.2f} Min {MIN_SCORE_TO_TRADE}/6\n"
                 for coin in WATCHLIST:
                     d,_,_=pro_smc(coin, debug=True); msg+=d+"\n"; time.sleep(0.2)
                 send(msg)
@@ -240,7 +269,7 @@ while True:
                     _,ok,tr=pro_smc(coin)
                     if ok and tr['score']>=MIN_SCORE_TO_TRADE:
                         lev,dist=calc_leverage_for_20pct_sl(tr['entry'],tr['sl']); tr['leverage']=lev; tr['dist_pct']=dist; cands.append(tr)
-                if not cands: # fallback in auto
+                if not cands:
                     for coin in WATCHLIST:
                         if coin in active: continue
                         _,ok,tr=pro_smc(coin)
