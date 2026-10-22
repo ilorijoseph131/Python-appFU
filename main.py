@@ -4,7 +4,7 @@ import os, ccxt, requests, time, hmac, hashlib, datetime
 
 app = Flask(__name__)
 @app.route('/')
-def home(): return "V3.2.12 TESTNET LIVE"
+def home(): return "V3.2.11 SPLIT URL DEMO FIX LIVE"
 def run_web():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
@@ -15,17 +15,25 @@ CHAT_ID = os.getenv("CHAT_ID","").strip()
 BYBIT_API_KEY = os.getenv("BYBIT_API_KEY","").strip()
 BYBIT_SECRET = os.getenv("BYBIT_SECRET","").strip()
 
-# === TESTNET FIX - uses testnet.bybit.com ===
+# === V3.2.11 SPLIT URL FIX ===
+# Public data from Mainnet (always works)
+# Private trading from Demo (needs Demo key from demo.bybit.com)
+# DO NOT use set_sandbox_mode(True) - it points to testnet and breaks Demo keys
 exchange = ccxt.bybit({
     'apiKey': BYBIT_API_KEY,
     'secret': BYBIT_SECRET,
     'enableRateLimit': True,
     'options': {'defaultType': 'unified'},
+    'urls': {
+        'api': {
+            'public': 'https://api.bybit.com',
+            'private': 'https://api-demo.bybit.com',
+        }
+    }
 })
-exchange.set_sandbox_mode(True) # <-- TESTNET needs this, DEMO does NOT
 try:
     exchange.load_markets()
-    print("load_markets TESTNET OK")
+    print("load_markets OK")
 except Exception as e:
     print(f"load_markets fail: {e}")
 
@@ -40,46 +48,47 @@ SCAN_TFS = ['15m','30m','1h','2h']
 WAT = datetime.timezone(datetime.timedelta(hours=1))
 
 def send(msg):
-    try: requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": CHAT_ID, "text": msg[:3800]}, timeout=15)
+    try:
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+        data={"chat_id": CHAT_ID, "text": msg[:3800]}, timeout=15)
     except: pass
+
 def fmt(p): return f"{p:.6f}" if p<0.01 else f"{p:.5f}" if p<1 else f"{p:.2f}"
 
 def get_balance():
+    # Try Demo first, then Mainnet - to detect which key you have
+    for base in ["https://api-demo.bybit.com", "https://api.bybit.com"]:
+        try:
+            t = str(int(time.time()*1000)); recv="5000"; params="accountType=UNIFIED&coin=USDT"
+            param_str = t + BYBIT_API_KEY + recv + params
+            sign = hmac.new(BYBIT_SECRET.encode(), param_str.encode(), hashlib.sha256).hexdigest()
+            headers = {"X-BAPI-API-KEY": BYBIT_API_KEY,"X-BAPI-SIGN": sign,"X-BAPI-TIMESTAMP": t,"X-BAPI-RECV-WINDOW": recv}
+            r = requests.get(f"{base}/v5/account/wallet-balance?{params}", headers=headers, timeout=10)
+            j = r.json()
+            if j.get("retCode")==0:
+                for c in j["result"]["list"][0]["coin"]:
+                    if c["coin"]=="USDT":
+                        print(f"Balance from {base}: {c['walletBalance']}")
+                        return float(c["walletBalance"])
+            else:
+                print(f"Balance fail {base}: {j}")
+        except Exception as e:
+            print(f"Balance error {base}: {e}")
     try:
         bal = exchange.fetch_balance(params={'accountType': 'UNIFIED'})
         total = bal['total'].get('USDT',0) or 0
-        if float(total)>0: return float(total)
-    except Exception as e: print(f"bal fail: {e}")
+        if total and float(total)>0: return float(total)
+    except: pass
     return 0
 
 def get_ohlcv(s,tf,lim=100):
-    # Try CCXT Testnet first
-    try:
-        o=exchange.fetch_ohlcv(s,tf,limit=lim)
-        if o and len(o)>50: return o
-    except: pass
-    # Fallback to Mainnet candles so /debug never says "no data"
-    try:
-        sym=s.split("/")[0]+"USDT"
-        tf_map={"15m":"15","30m":"30","1h":"60","2h":"120"}
-        interval=tf_map.get(tf,"60")
-        url=f"https://api.bybit.com/v5/market/kline?category=linear&symbol={sym}&interval={interval}&limit={lim}"
-        r=requests.get(url,timeout=10).json()
-        if r.get("retCode")==0 and r["result"]["list"]:
-            data=list(reversed(r["result"]["list"]))
-            return [[int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])] for k in data]
-    except: pass
-    return None
+    try: return exchange.fetch_ohlcv(s,tf,limit=lim)
+    except Exception as e:
+        print(f"ohlcv fail {s} {tf}: {e}"); return None
 
 def get_price(s):
     try: return float(exchange.fetch_ticker(s)['last'])
-    except:
-        try:
-            sym=s.split("/")[0]+"USDT"
-            url=f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={sym}"
-            r=requests.get(url,timeout=10).json()
-            return float(r["result"]["list"][0]["lastPrice"])
-        except: return None
+    except: return None
 
 def calc_rsi(c,p=14):
     if len(c)<p+1: return 50
@@ -87,6 +96,7 @@ def calc_rsi(c,p=14):
     for i in range(1,len(c)): d=c[i]-c[i-1]; g.append(max(d,0)); l.append(max(-d,0))
     ag=sum(g[-p:])/p; al=sum(l[-p:])/p
     return 70 if al==0 else 100-(100/(1+ag/al))
+
 def calc_ema(c,p=50):
     if len(c)<p: return c[-1]
     k=2/(p+1); ema=sum(c[:p])/p
@@ -125,14 +135,21 @@ def pro_smc(symbol, debug=False):
         if side:
             debug_lines.append(f"{tf}:{score}{side[0]}")
             if score>best_score:
-                best_score=score; entry=resistance if side=="LONG" else support
-                if side=="LONG": sl=min(lows[-10:]); risk=entry-sl
-                else: sl=max(highs[-10:]); risk=sl-entry
-                if risk<=0 or risk<entry*0.004: risk=entry*0.012; sl=entry-risk if side=="LONG" else entry+risk
-                tp1=entry+risk*1.5 if side=="LONG" else entry-risk*1.5; tp2=entry+risk*3 if side=="LONG" else entry-risk*3
+                best_score=score
+                entry=resistance if side=="LONG" else support
+                if side=="LONG":
+                    sl=min(lows[-10:]); risk=entry-sl
+                    if risk<=0 or risk<entry*0.004: risk=entry*0.012; sl=entry-risk
+                    tp1=entry+risk*1.5; tp2=entry+risk*3
+                else:
+                    sl=max(highs[-10:]); risk=sl-entry
+                    if risk<=0 or risk<entry*0.004: risk=entry*0.012; sl=entry+risk
+                    tp1=entry-risk*1.5; tp2=entry-risk*3
                 best={"symbol":symbol,"side":side,"entry":entry,"sl":sl,"tp1":tp1,"tp2":tp2,"tf":tf,"score":score,"be_done":False,"sr_label":f"SR BREAK {sr_label}"}
-    if debug: return (f"{symbol.split('/')[0]} {' | '.join(debug_lines) if debug_lines else 'no BOS'}", False, None)
-    if best: return (f"{best['symbol']} {best['side']} {best['score']}/6 {best['sr_label']}", True, best)
+    if debug:
+        return (f"{symbol.split('/')[0]} {' | '.join(debug_lines) if debug_lines else 'no BOS'}", False, None)
+    if best:
+        return (f"{best['symbol']} {best['side']} {best['score']}/6 {best['sr_label']}", True, best)
     return ("", False, None)
 
 def calc_leverage_for_20pct_sl(entry, sl):
@@ -144,11 +161,13 @@ def calc_leverage_for_20pct_sl(entry, sl):
 def open_bybit(symbol, side, lev, margin):
     try:
         try: exchange.set_leverage(lev, symbol, params={'marginMode':'cross'})
-        except: exchange.set_leverage(lev, symbol)
+        except:
+            try: exchange.set_leverage(lev, symbol)
+            except Exception as e: print(f"lev fail {symbol}: {e}")
         price=get_price(symbol)
-        if not price: return None,0,0
+        if not price: send(f"❌ no price {symbol}"); return None,0,0
         amount = (margin * lev) / price
-        if amount*price < 10: return None,0,0
+        if amount*price < 10: send(f"❌ too small {symbol}"); return None,0,0
         amount = float(exchange.amount_to_precision(symbol, amount))
         order_side='buy' if side=='LONG' else 'sell'
         order=exchange.create_market_order(symbol, order_side, amount, params={'positionIdx':0})
@@ -164,38 +183,52 @@ def close_bybit(symbol, side, amount, perc=100):
     except Exception as e: send(f"❌ CLOSE FAIL {symbol}: {e}")
 
 bal = get_balance()
-day_start_balance = bal if bal>0 else 0
+day_start_balance = bal if bal>0 else 50000
+last_daily_report_date = None
 active = {}
-if bal>0: send(f"✅ V3.2.12 TESTNET LIVE\nBal ${bal:.2f} 5%=${bal*0.05:.2f}\nMax {MAX_OPEN_TRADES} | 4/6 + 3/6 fallback\nSend /test /debug /scan")
-else: send("⚠️ TESTNET Balance 0 - Go to testnet.bybit.com -> Faucet to claim USDT")
+if bal>0:
+    send(f"✅ V3.2.11 LIVE - SPLIT URL FIX\nBal ${bal:.2f} | 5%=${bal*0.05:.2f} MaxLoss ${bal*0.05*0.2:.2f}\nMax {MAX_OPEN_TRADES} | 4/6 + 3/6 fallback\nWatch ZEC,BTC,ETH,SOL,DOGE,BONK,WIF,AVAX\nIf you still see 10032, create key at demo.bybit.com\nSend /test /debug /scan")
+else: send("⚠️ Balance 0 - If you see this, key is Mainnet but bot asks Demo - create Demo key at demo.bybit.com")
 
-last_id=0; last_check=0; last_daily_report_date=None
+last_id=0; last_check=0
 while True:
     try:
         now_wat = datetime.datetime.now(WAT)
         if now_wat.hour==0 and now_wat.minute<5:
             today = now_wat.date()
             if last_daily_report_date!= today:
-                cur_bal = get_balance()
-                send(f"📊 DAILY {today} Start ${day_start_balance:.2f} -> Now ${cur_bal:.2f} Open {len(active)}/{MAX_OPEN_TRADES}")
+                cur_bal = get_balance(); floating=0
+                for t in active.values():
+                    cur=get_price(t['symbol'])
+                    if cur:
+                        pnl = (cur-t['entry'])/t['entry']*t['margin']*t['leverage'] if t['side']=="LONG" else (t['entry']-cur)/t['entry']*t['margin']*t['leverage']
+                        floating+=pnl
+                daily = cur_bal - day_start_balance + floating
+                pct = (daily/day_start_balance*100) if day_start_balance>0 else 0
+                send(f"📊 DAILY PnL {today} 00:00 WAT\nStart ${day_start_balance:.2f} -> Now ${cur_bal:.2f}\nFloat ${floating:+.2f}\nNet {daily:+.2f} ({pct:+.2f}%) Open {len(active)}/{MAX_OPEN_TRADES}")
                 day_start_balance = cur_bal; last_daily_report_date = today
+
         res=requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={last_id+1}&timeout=20",timeout=25).json()
         for upd in res.get("result",[]):
             last_id=upd["update_id"]
             txt=upd.get("message",{}).get("text","").lower()
             if txt=="/test":
                 try:
+                    exchange.set_leverage(5, "BTC/USDT:USDT")
+                    send("✅ set_leverage OK")
                     price=get_price("BTC/USDT:USDT")
-                    amount=float(exchange.amount_to_precision("BTC/USDT:USDT", (20*5)/price))
+                    amount=float(exchange.amount_to_precision("BTC/USDT:USDT", (10*5)/price))
+                    send(f"Try buy {amount} BTC @ {price}")
                     o=exchange.create_market_order("BTC/USDT:USDT","buy",amount, params={'positionIdx':0})
-                    send(f"✅ TEST ORDER OK {o.get('id')} BTC {amount}")
+                    send(f"✅ TEST ORDER OK {o.get('id')}")
                     exchange.create_market_order("BTC/USDT:USDT","sell",amount, params={'reduceOnly':True, 'positionIdx':0})
-                    send("✅ TEST CLOSE OK - TESTNET works!")
-                except Exception as e: send(f"❌ TEST FAIL: {e}")
+                    send("✅ TEST CLOSE OK - Demo works!")
+                except Exception as e:
+                    send(f"❌ TEST FAIL: {e}\nIf 10032, you use Mainnet key. Create key at demo.bybit.com")
             elif txt=="/scan":
                 bal=get_balance()
-                if bal==0: send("❌ Balance 0 - claim faucet at testnet.bybit.com"); continue
-                if len(active)>=MAX_OPEN_TRADES: send(f"⏸️ Max {MAX_OPEN_TRADES}"); continue
+                if bal==0: send("❌ Balance 0 - create Demo key at demo.bybit.com"); continue
+                if len(active)>=MAX_OPEN_TRADES: send(f"⏸️ Max {MAX_OPEN_TRADES} Bal ${bal:.2f}"); continue
                 cands=[]
                 for coin in WATCHLIST:
                     if coin in active: continue
@@ -209,53 +242,65 @@ while True:
                         _,ok,tr=pro_smc(coin)
                         if ok and tr['score']>=3:
                             lev,dist=calc_leverage_for_20pct_sl(tr['entry'],tr['sl']); tr['leverage']=lev; tr['dist_pct']=dist; cands.append(tr)
+                        time.sleep(0.1)
+                    if cands: send(f"⚠️ No 4+, taking fallback 3+ - {len(cands)}")
                 cands.sort(key=lambda x: x['score'], reverse=True)
-                if not cands: send(f"🔍 No setup Bal ${bal:.2f} Try /debug")
+                if not cands: send(f"🔍 No 4+/3+ SR BOS. Bal ${bal:.2f} Active {len(active)}/{MAX_OPEN_TRADES} Try /debug")
                 for tr in cands[:MAX_OPEN_TRADES-len(active)]:
                     bal=get_balance(); margin=bal*PERCENT_PER_TRADE/100
                     o,a,p=open_bybit(tr['symbol'],tr['side'],tr['leverage'],margin)
                     if o:
                         tr['amount']=a; tr['entry']=p; tr['margin']=margin; active[tr['symbol']]=tr
-                        send(f"🟢 OPENED {tr['symbol']} {tr['side']} {tr['leverage']}x Score {tr['score']}/6")
+                        send(f"🟢 OPENED {tr['symbol']} {tr['side']} {tr['leverage']}x Score {tr['score']}/6 TF {tr['tf']}\n{tr['sr_label']}\nEntry {fmt(p)} SL {fmt(tr['sl'])} Dist {tr['dist_pct']:.2f}%")
             elif txt=="/debug":
-                bal=get_balance(); msg=f"DEBUG Bal ${bal:.2f}\n"
+                bal=get_balance(); msg=f"DEBUG Bal ${bal:.2f} Min {MIN_SCORE_TO_TRADE}/6\n"
                 for coin in WATCHLIST:
                     d,_,_=pro_smc(coin, debug=True); msg+=d+"\n"; time.sleep(0.2)
                 send(msg)
-            elif txt in ["/bal","/pnl"]:
-                bal=get_balance(); send(f"💰 Bal ${bal:.2f} Active {len(active)}/{MAX_OPEN_TRADES}")
+            elif txt in ["/bal","/balance","/trades","/pnl"]:
+                bal=get_balance(); msg=f"💰 Bal ${bal:.2f} Active {len(active)}/{MAX_OPEN_TRADES}\n"
+                floating=0
+                for c,t in active.items():
+                    cur=get_price(c)
+                    if not cur: continue
+                    pnl_pct=(cur-t['entry'])/t['entry']*100*t['leverage'] if t['side']=="LONG" else (t['entry']-cur)/t['entry']*100*t['leverage']
+                    pnl_val=t['margin']*pnl_pct/100; floating+=pnl_val
+                    msg+=f"{c} {t['side']} {t['leverage']}x {pnl_pct:+.1f}%\n"
+                msg+=f"Float ${floating:+.2f}"
+                send(msg)
+
         if time.time()-last_check>120:
             last_check=time.time()
-            # auto scan + TP/SL same as before
             if len(active)<MAX_OPEN_TRADES:
                 cands=[]
                 for coin in WATCHLIST:
                     if coin in active: continue
                     _,ok,tr=pro_smc(coin)
                     if ok and tr['score']>=MIN_SCORE_TO_TRADE:
-                        lev,dist=calc_leverage_for_20pct_sl(tr['entry'],tr['sl']); tr['leverage']=lev; cands.append(tr)
+                        lev,dist=calc_leverage_for_20pct_sl(tr['entry'],tr['sl']); tr['leverage']=lev; tr['dist_pct']=dist; cands.append(tr)
                 if not cands:
                     for coin in WATCHLIST:
                         if coin in active: continue
                         _,ok,tr=pro_smc(coin)
                         if ok and tr['score']>=3:
-                            lev,dist=calc_leverage_for_20pct_sl(tr['entry'],tr['sl']); tr['leverage']=lev; cands.append(tr)
+                            lev,dist=calc_leverage_for_20pct_sl(tr['entry'],tr['sl']); tr['leverage']=lev; tr['dist_pct']=dist; cands.append(tr)
                 cands.sort(key=lambda x: x['score'], reverse=True)
                 for tr in cands[:MAX_OPEN_TRADES-len(active)]:
                     bal=get_balance(); margin=bal*PERCENT_PER_TRADE/100
                     o,a,p=open_bybit(tr['symbol'],tr['side'],tr['leverage'],margin)
                     if o:
                         tr['amount']=a; tr['entry']=p; tr['margin']=margin; active[tr['symbol']]=tr
-                        send(f"🚨 AUTO {tr['symbol']} {tr['side']} {tr['leverage']}x")
+                        send(f"🚨 AUTO {tr['symbol']} {tr['side']} {tr['leverage']}x Score {tr['score']}/6")
+
             for coin,t in list(active.items()):
                 cur=get_price(coin)
                 if not cur: continue
                 if t['side']=="LONG":
-                    if not t['be_done'] and cur>=t['tp1']: close_bybit(coin,t['side'],t['amount'],50); t['be_done']=True; t['amount']*=0.5; send(f"🔒 {coin} TP1")
+                    if not t['be_done'] and cur>=t['tp1']: close_bybit(coin,t['side'],t['amount'],50); send(f"🔒 {coin} TP1"); t['be_done']=True; t['amount']*=0.5
                     elif cur>=t['tp2']: close_bybit(coin,t['side'],t['amount'],100); send(f"🎯 {coin} TP2"); del active[coin]
                     elif cur<=t['sl']: close_bybit(coin,t['side'],t['amount'],100); send(f"❌ {coin} SL"); del active[coin]
                 else:
-                    if not t['be_done'] and cur<=t['tp1']: close_bybit(coin,t['side'],t['amount'],50); t['be_done']=True; t['amount']*=0.5; send(f"🔒 {coin} TP1")
+                    if not t['be_done'] and cur<=t['tp1']: close_bybit(coin,t['side'],t['amount'],50); send(f"🔒 {coin} TP1"); t['be_done']=True; t['amount']*=0.5
                     elif cur<=t['tp2']: close_bybit(coin,t['side'],t['amount'],100); send(f"🎯 {coin} TP2"); del active[coin]
                     elif cur>=t['sl']: close_bybit(coin,t['side'],t['amount'],100); send(f"❌ {coin} SL"); del active[coin]
     except Exception as e:
