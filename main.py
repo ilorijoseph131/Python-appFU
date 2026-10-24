@@ -2,7 +2,7 @@ from flask import Flask
 from threading import Thread
 app=Flask(__name__)
 @app.route('/')
-def home():return "V3.2.26 6COINS NATIVE SL"
+def home():return "V3.2.28 AUTO REPORTS"
 def run_flask():app.run(host='0.0.0.0',port=10000)
 Thread(target=run_flask,daemon=True).start()
 import os,ccxt,requests,time
@@ -20,7 +20,7 @@ TFS=['15m','30m','1h','2h']
 closed=[]
 def add_c(sym,side,tf,en,sl,tp1,tp2,res,pnl):
  now=datetime.now(WAT)
- closed.append({"d":now.strftime("%Y-%m-%d"),"sym":sym,"side":side,"tf":tf,"res":res,"pnl":pnl})
+ closed.append({"d":now.strftime("%Y-%m-%d"),"dt":now,"sym":sym,"side":side,"tf":tf,"res":res,"pnl":pnl})
 def send(m):
  try:requests.post(f"https://api.telegram.org/bot{BOT}/sendMessage",data={"chat_id":CHAT,"text":m[:4000]},timeout=10)
  except:pass
@@ -50,7 +50,7 @@ def ema(cs,p=50):
  return e
 def smc(sym):
  o1=ohlc(sym,'1h',100)
- if not o1 or len(o1)<60:return "⚪ Ranging",False,None
+ if not o1 or len(o1)<60:return f"⚪ {sym} Ranging",False,None
  c1=[x[4] for x in o1];e1=ema(c1,50);bull=c1[-1]>e1
  best=0;msg="";tr=None
  for tf in TFS:
@@ -71,7 +71,7 @@ def smc(sym):
     if rk<=0:rk=last*0.015;sl=last-rk
     tp1=last+rk*1.5;tp2=last+rk*3
     tr={"sym":sym,"side":"LONG","entry":last,"sl":sl,"tp1":tp1,"tp2":tp2,"tf":tf,"be":False,"sc":sc,"amt":0}
-    msg=f"🟢 {sym} LONG [{tf}] {sc}/6 💰{fp(last)} 🛑{fp(sl)} 🎯TP1 {fp(tp1)} TP2 {fp(tp2)}"
+    msg=f"🟢 {sym} LONG [{tf}] {sc}/6 💰{fp(last)}"
   elif last<pl:
    if last<em:sc+=1
    if 25<rs<50:sc+=1
@@ -83,7 +83,7 @@ def smc(sym):
     if rk<=0:rk=last*0.015;sl=last+rk
     tp1=last-rk*1.5;tp2=last-rk*3
     tr={"sym":sym,"side":"SHORT","entry":last,"sl":sl,"tp1":tp1,"tp2":tp2,"tf":tf,"be":False,"sc":sc,"amt":0}
-    msg=f"🔴 {sym} SHORT [{tf}] {sc}/6 💰{fp(last)} 🛑{fp(sl)} 🎯TP1 {fp(tp1)} TP2 {fp(tp2)}"
+    msg=f"🔴 {sym} SHORT [{tf}] {sc}/6 💰{fp(last)}"
  if msg:return msg,True,tr
  return f"⚪ {sym} Ranging",False,None
 def lev(en,sl):
@@ -105,7 +105,7 @@ def open_p(sym,side,lv,mg,sl,tp2):
   sd='buy' if side=='LONG' else 'sell'
   o=ex.create_market_order(sym,sd,am,params={'positionIdx':0})
   try:ex.set_trading_stop(sym,0,stopLoss=ex.price_to_precision(sym,sl),takeProfit=ex.price_to_precision(sym,tp2),params={'positionIdx':0,'tpslMode':'Full'})
-  except Exception as e:print(f"SL set err {e}")
+  except:pass
   return o,am,pr
  except Exception as e:send(f"❌ OPEN FAIL {sym}:{e}");return None,0,0
 def close_p(sym,side,am,p=100):
@@ -116,6 +116,10 @@ def close_p(sym,side,am,p=100):
 def set_be(sym,en):
  try:ex.set_trading_stop(sym,0,stopLoss=ex.price_to_precision(sym,en),params={'positionIdx':0})
  except:pass
+def report(period,items):
+ if not items:return f"📅 {period.upper()} REPORT\n💰 Bal ${bal():.2f}\n📊 No trades"
+ tp1=len([x for x in items if x['res']=='TP1']);tp2=len([x for x in items if x['res']=='TP2']);sl=len([x for x in items if x['res']=='SL']);pnl=sum([x['pnl'] for x in items])
+ return f"📅 {period.upper()} REPORT {datetime.now(WAT).strftime('%Y-%m-%d')}\n💰 Bal ${bal():.2f}\n📊 Trades {len(items)} | TP1 {tp1} TP2 {tp2} SL {sl}\n💹 PnL {pnl:+.2f}% {'🟢' if pnl>=0 else '🔴'}"
 active={}
 try:
  ps=ex.fetch_positions(params={'accountType':'UNIFIED'})
@@ -126,8 +130,8 @@ try:
    if en==0:continue
    active[sy]={"sym":sy,"side":sd,"entry":en,"sl":en*0.95 if sd=="LONG" else en*1.05,"tp1":en*1.02 if sd=="LONG" else en*0.98,"tp2":en*1.04 if sd=="LONG" else en*0.96,"tf":"REC","be":False,"sc":5,"amt":abs(co)}
 except:pass
-send(f"🚀 V3.2.26 LIVE 🛡️ 6 COINS {len(active)} rec 💰 Bal ${bal():.2f} SOL DOGE BONK WIF DOT AVAX")
-last_id=0;last_chk=0
+send(f"🚀 V3.2.28 LIVE 📊 AUTO REPORTS D/W/M {len(active)} rec 💰 ${bal():.2f}")
+last_id=0;last_chk=0;last_day="";last_week="";last_month=""
 while True:
  try:
   r=requests.get(f"https://api.telegram.org/bot{BOT}/getUpdates?offset={last_id+1}&timeout=20",timeout=25).json()
@@ -135,34 +139,51 @@ while True:
    last_id=u["update_id"];txt=u.get("message",{}).get("text","")
    if not txt:continue
    low=txt.lower().strip()
-   if low in ["/start","/help"]:send("📋 /scan /trades /today /bal /stop V3.2.26 6 Coins")
+   if low in ["/start","/help"]:send("📋 /scan /trades /today /week /month /bal /stop V3.2.28")
    elif low=="/bal":send(f"💰 Bal ${bal():.2f} 📊 Active {len(active)}/1")
    elif low=="/trades":
     if not active:send("⚪ No active")
     else:
-     m="📊 ACTIVE 🛡️ NATIVE SL\n"
+     m="📊 ACTIVE 🛡️\n"
      for c,t in active.items():
       cur=price(c);pn=(cur-t['entry'])/t['entry']*100 if cur else 0
       if t['side']=="SHORT":pn=-pn
-      m+=f"{c} {t['side']} {fp(t['entry'])} {pn:+.1f}% BE:{t['be']}\n"
+      m+=f"{c} {t['side']} {fp(t['entry'])} {pn:+.1f}%\n"
      send(m)
    elif low=="/today":
-    td=datetime.now(WAT).strftime("%Y-%m-%d");ts=[x for x in closed if x['d']==td]
-    if not ts:send("📅 Today 0 trades")
-    else:send(f"📅 Today {len(ts)} PnL {sum([x['pnl'] for x in ts]):+.1f}%")
+    td=datetime.now(WAT).strftime("%Y-%m-%d");ts=[x for x in closed if x['d']==td];send(report("today",ts))
+   elif low=="/week":
+    now=datetime.now(WAT);ts=[x for x in closed if x['dt'].isocalendar()[1]==now.isocalendar()[1] and x['dt'].year==now.year];send(report("weekly",ts))
+   elif low=="/month":
+    now=datetime.now(WAT);ts=[x for x in closed if x['dt'].month==now.month and x['dt'].year==now.year];send(report("monthly",ts))
    elif low=="/scan":
-    send("🔍 SCAN 6 cheap coins...")
+    if len(active)>=1:send(f"⚠️ Already {len(active)}/1 active");continue
+    send("🔍 SCAN 6 coins...")
+    rep="📊 SCAN:\n";opened=False
     for coin in WL:
-     a,ok,tr=smc(coin)
-     if ok and coin not in active and len(active)<1:
+     a,ok,tr=smc(coin);rep+=a+"\n"
+     if ok and not opened:
       b=bal();lv=lev(tr['entry'],tr['sl']);mg=max(1.0,b*0.33);o,am,pr=open_p(coin,tr['side'],lv,mg,tr['sl'],tr['tp2'])
-      if o:tr['amt']=am;tr['entry']=pr;active[coin]=tr;send(f"✅ OPEN {coin} {tr['side']} {lv}x {fp(pr)} 🛡️ SL {fp(tr['sl'])} TP2 {fp(tr['tp2'])}")
-     time.sleep(0.3)
+      if o:tr['amt']=am;tr['entry']=pr;active[coin]=tr;rep+=f"✅ OPENED {coin}\n";opened=True
+     time.sleep(0.2)
+    if not opened:rep+="\n⚪ No setup 4/6"
+    send(rep)
    elif low=="/stop":
     for c,t in list(active.items()):close_p(c,t['side'],t['amt'],100)
     active.clear();send("🛑 Cleared")
-   elif low=="/status":send(f"✅ V3.2.26 6 COINS Native SL Active {len(active)} 💰 ${bal():.2f}")
-  nt=time.time()
+   elif low=="/status":send(f"✅ V3.2.28 Auto D/W/M Active {len(active)} 💰 ${bal():.2f}")
+  nt=time.time();now=datetime.now(WAT)
+  # DAILY AUTO 23:59 WAT
+  if now.hour==23 and now.minute>=59 and now.strftime("%Y-%m-%d")!=last_day:
+   td=now.strftime("%Y-%m-%d");ts=[x for x in closed if x['d']==td];send(report("daily auto",ts));last_day=td
+  # WEEKLY AUTO SUNDAY 23:59
+  if now.weekday()==6 and now.hour==23 and now.minute>=59 and str(now.isocalendar()[1])!=last_week:
+   ts=[x for x in closed if x['dt'].isocalendar()[1]==now.isocalendar()[1] and x['dt'].year==now.year];send(report("weekly auto",ts));last_week=str(now.isocalendar()[1])
+  # MONTHLY AUTO LAST DAY 23:59
+  import calendar
+  ld=calendar.monthrange(now.year,now.month)[1]
+  if now.day==ld and now.hour==23 and now.minute>=59 and f"{now.year}-{now.month}"!=last_month:
+   ts=[x for x in closed if x['dt'].month==now.month and x['dt'].year==now.year];send(report("monthly auto",ts));last_month=f"{now.year}-{now.month}"
   if nt-last_chk>120:
    last_chk=nt
    for c,t in list(active.items()):
@@ -171,7 +192,7 @@ while True:
     en=t['entry'];sd=t['side'];pn=(pr-en)/en*100 if sd=="LONG" else (en-pr)/en*100
     if not t['be']:
      if (sd=="LONG" and pr>=t['tp1']) or (sd=="SHORT" and pr<=t['tp1']):
-      close_p(c,sd,t['amt'],50);t['amt']*=0.5;add_c(c,sd,t['tf'],en,t['sl'],t['tp1'],t['tp2'],"TP1",pn*0.5);t['be']=True;set_be(c,en);send(f"🎯 TP1 {c} {pn:+.1f}% 50% closed + BE {fp(en)} 🛡️")
+      close_p(c,sd,t['amt'],50);t['amt']*=0.5;add_c(c,sd,t['tf'],en,t['sl'],t['tp1'],t['tp2'],"TP1",pn*0.5);t['be']=True;set_be(c,en);send(f"🎯 TP1 {c} {pn:+.1f}% BE {fp(en)} 🛡️")
     if sd=="LONG":
      if pr<=t['sl']:close_p(c,sd,t['amt'],100);add_c(c,sd,t['tf'],en,t['sl'],t['tp1'],t['tp2'],"SL",pn);del active[c];send(f"🛑 SL {c} {pn:+.1f}%")
      elif pr>=t['tp2']:close_p(c,sd,t['amt'],100);add_c(c,sd,t['tf'],en,t['sl'],t['tp1'],t['tp2'],"TP2",pn);del active[c];send(f"💰 TP2 {c} {pn:+.1f}%")
