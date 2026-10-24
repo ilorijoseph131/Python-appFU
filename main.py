@@ -2,7 +2,7 @@ from flask import Flask
 from threading import Thread
 app=Flask(__name__)
 @app.route('/')
-def home():return "V3.2.25 FIXED NATIVE SL"
+def home():return "V3.2.26 6COINS NATIVE SL"
 def run_flask():app.run(host='0.0.0.0',port=10000)
 Thread(target=run_flask,daemon=True).start()
 import os,ccxt,requests,time
@@ -15,7 +15,7 @@ ex=ccxt.bybit({'apiKey':KEY,'secret':SEC,'enableRateLimit':True,'options':{'defa
 try:ex.load_markets()
 except:pass
 WAT=timezone(timedelta(hours=1))
-WL=[s.replace("/USDT","/USDT:USDT") for s in ["BTC/USDT","ETH/USDT","SOL/USDT","BNB/USDT","DOGE/USDT","BONK/USDT","WIF/USDT","ZEC/USDT","AVAX/USDT","DOT/USDT","ONDO/USDT","PAXG/USDT"]]
+WL=["SOL/USDT:USDT","DOGE/USDT:USDT","BONK/USDT:USDT","WIF/USDT:USDT","DOT/USDT:USDT","AVAX/USDT:USDT"]
 TFS=['15m','30m','1h','2h']
 closed=[]
 def add_c(sym,side,tf,en,sl,tp1,tp2,res,pnl):
@@ -104,8 +104,7 @@ def open_p(sym,side,lv,mg,sl,tp2):
   except:pass
   sd='buy' if side=='LONG' else 'sell'
   o=ex.create_market_order(sym,sd,am,params={'positionIdx':0})
-  try:
-   ex.set_trading_stop(sym,0,stopLoss=ex.price_to_precision(sym,sl),takeProfit=ex.price_to_precision(sym,tp2),params={'positionIdx':0,'tpslMode':'Full'})
+  try:ex.set_trading_stop(sym,0,stopLoss=ex.price_to_precision(sym,sl),takeProfit=ex.price_to_precision(sym,tp2),params={'positionIdx':0,'tpslMode':'Full'})
   except Exception as e:print(f"SL set err {e}")
   return o,am,pr
  except Exception as e:send(f"❌ OPEN FAIL {sym}:{e}");return None,0,0
@@ -127,7 +126,7 @@ try:
    if en==0:continue
    active[sy]={"sym":sy,"side":sd,"entry":en,"sl":en*0.95 if sd=="LONG" else en*1.05,"tp1":en*1.02 if sd=="LONG" else en*0.98,"tp2":en*1.04 if sd=="LONG" else en*0.96,"tf":"REC","be":False,"sc":5,"amt":abs(co)}
 except:pass
-send(f"🚀 V3.2.25 LIVE 🛡️ NATIVE SL {len(active)} rec 💰 Bal ${bal():.2f}")
+send(f"🚀 V3.2.26 LIVE 🛡️ 6 COINS {len(active)} rec 💰 Bal ${bal():.2f} SOL DOGE BONK WIF DOT AVAX")
 last_id=0;last_chk=0
 while True:
  try:
@@ -136,12 +135,12 @@ while True:
    last_id=u["update_id"];txt=u.get("message",{}).get("text","")
    if not txt:continue
    low=txt.lower().strip()
-   if low in ["/start","/help"]:send("📋 /scan /trades /today /bal /stop V3.2.25 🛡️")
-   elif low=="/bal":send(f"💰 Bal ${bal():.2f} 📊 Active {len(active)}")
+   if low in ["/start","/help"]:send("📋 /scan /trades /today /bal /stop V3.2.26 6 Coins")
+   elif low=="/bal":send(f"💰 Bal ${bal():.2f} 📊 Active {len(active)}/1")
    elif low=="/trades":
     if not active:send("⚪ No active")
     else:
-     m="📊 ACTIVE 🛡️ NATIVE SL SET\n"
+     m="📊 ACTIVE 🛡️ NATIVE SL\n"
      for c,t in active.items():
       cur=price(c);pn=(cur-t['entry'])/t['entry']*100 if cur else 0
       if t['side']=="SHORT":pn=-pn
@@ -152,7 +151,7 @@ while True:
     if not ts:send("📅 Today 0 trades")
     else:send(f"📅 Today {len(ts)} PnL {sum([x['pnl'] for x in ts]):+.1f}%")
    elif low=="/scan":
-    send("🔍 SCAN 12...")
+    send("🔍 SCAN 6 cheap coins...")
     for coin in WL:
      a,ok,tr=smc(coin)
      if ok and coin not in active and len(active)<1:
@@ -162,7 +161,7 @@ while True:
    elif low=="/stop":
     for c,t in list(active.items()):close_p(c,t['side'],t['amt'],100)
     active.clear();send("🛑 Cleared")
-   elif low=="/status":send(f"✅ V3.2.25 Native SL Active {len(active)} 💰 ${bal():.2f}")
+   elif low=="/status":send(f"✅ V3.2.26 6 COINS Native SL Active {len(active)} 💰 ${bal():.2f}")
   nt=time.time()
   if nt-last_chk>120:
    last_chk=nt
@@ -172,7 +171,7 @@ while True:
     en=t['entry'];sd=t['side'];pn=(pr-en)/en*100 if sd=="LONG" else (en-pr)/en*100
     if not t['be']:
      if (sd=="LONG" and pr>=t['tp1']) or (sd=="SHORT" and pr<=t['tp1']):
-      close_p(c,sd,t['amt'],50);t['amt']*=0.5;add_c(c,sd,t['tf'],en,t['sl'],t['tp1'],t['tp2'],"TP1",pn*0.5);t['be']=True;set_be(c,en);send(f"🎯 TP1 {c} {pn:+.1f}% 50% closed + SL->BE {fp(en)} 🛡️ updated")
+      close_p(c,sd,t['amt'],50);t['amt']*=0.5;add_c(c,sd,t['tf'],en,t['sl'],t['tp1'],t['tp2'],"TP1",pn*0.5);t['be']=True;set_be(c,en);send(f"🎯 TP1 {c} {pn:+.1f}% 50% closed + BE {fp(en)} 🛡️")
     if sd=="LONG":
      if pr<=t['sl']:close_p(c,sd,t['amt'],100);add_c(c,sd,t['tf'],en,t['sl'],t['tp1'],t['tp2'],"SL",pn);del active[c];send(f"🛑 SL {c} {pn:+.1f}%")
      elif pr>=t['tp2']:close_p(c,sd,t['amt'],100);add_c(c,sd,t['tf'],en,t['sl'],t['tp1'],t['tp2'],"TP2",pn);del active[c];send(f"💰 TP2 {c} {pn:+.1f}%")
