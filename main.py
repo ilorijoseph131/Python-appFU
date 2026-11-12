@@ -2,25 +2,78 @@ from flask import Flask
 from threading import Thread
 app=Flask(__name__)
 @app.route('/')
-def home():return "BYBIT V4.4 FIXED REAL SLTP BCH STRICT 5%"
+def home():return "V3.2.5 STRATEGY x V4.4 ENGINE FINAL"
 def run_flask():app.run(host='0.0.0.0',port=10000)
 Thread(target=run_flask,daemon=True).start()
-import os,ccxt,requests,time,calendar
+import os,ccxt,requests,time
 from datetime import datetime,timezone,timedelta
 TELEGRAM_TOKEN=os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN") or ""
 CHAT_ID=os.getenv("CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID") or ""
 API_KEY=os.getenv("BYBIT_API_KEY","").strip()
-API_SECRET=os.getenv("BYBIT_SECRET","").strip()
+API_SECRET=os.getenv("BYBIT_SECRET","").strip() or os.getenv("BYBIT_API_SECRET","").strip()
 ex=ccxt.bybit({'apiKey':API_KEY,'secret':API_SECRET,'enableRateLimit':True,'options':{'defaultType':'unified'}})
 try:ex.load_markets()
 except:pass
+spot=ccxt.okx({'enableRateLimit':True,'options':{'defaultType':'spot'}})
+try:spot.load_markets()
+except:pass
 WAT=timezone(timedelta(hours=1))
-WATCHLIST=["BCH/USDT:USDT","AVAX/USDT:USDT","DOGE/USDT:USDT","SOL/USDT:USDT","BONK/USDT:USDT","PAXG/USDT:USDT","ONDO/USDT:USDT"]
+# V3.2.5 WATCHLIST 12 coins + V4.4 FORMAT USDT:USDT
+WATCHLIST_RAW=["BCH/USDT","ETH/USDT","SOL/USDT","BNB/USDT","DOGE/USDT","BONK/USDT","WIF/USDT","ZEC/USDT","AVAX/USDT","DOT/USDT","ONDO/USDT","PAXG/USDT"]
+WATCHLIST=[s+":USDT" if ":USDT" not in s else s for s in WATCHLIST_RAW]
 SCAN_TFS=['15m','30m','1h','2h']
 MAX_TRADES=4
-AUTO_SCAN_SEC=300
+AUTO_SCAN_SEC=900
+PCT_PER_TRADE=0.05
+MIN_NOTIONAL=5.6
 closed=[];active={};paused=False
-last_auto_daily="";last_week="";last_month=""
+last_flip_time={};last_trade_alert={}
+last_id=0;last_scan=0;last_chk=0
+def send(m):
+ try:requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",data={"chat_id":CHAT_ID,"text":m[:3900],"parse_mode":"Markdown"},timeout=15)
+ except:pass
+def fmt_price(p):
+ if p is None:return "N/A"
+ if p<0.0001:return f"${p:.8f}"
+ elif p<0.01:return f"${p:.6f}"
+ elif p<1:return f"${p:.5f}"
+ elif p<100:return f"${p:.4f}"
+ else:return f"${p:.2f}"
+def get_ohlcv_raw(symbol,timeframe='1h',limit=100):
+ try:return spot.fetch_ohlcv(symbol,timeframe,limit=limit)
+ except:
+  try:return spot.fetch_ohlcv(symbol,timeframe.lower(),limit=limit)
+  except:return None
+def price(s):
+ try:return float(ex.fetch_ticker(s)['last'])
+ except:
+  try:
+   s2=s.replace(":USDT","/USDT")
+   return float(ex.fetch_ticker(s2)['last'])
+  except:return None
+def calc_rsi_list(closes,period=14):
+ if len(closes)<period+1:return 50.0
+ gains,losses=[],[]
+ for i in range(1,len(closes)):
+  d=closes[i]-closes[i-1]
+  gains.append(max(d,0));losses.append(max(-d,0))
+ avg_gain=sum(gains[-period:])/period
+ avg_loss=sum(losses[-period:])/period
+ if avg_loss==0:return 70.0
+ return 100-(100/(1+avg_gain/avg_loss))
+def calc_ema_list(closes,period=50):
+ if len(closes)<period:return closes[-1]
+ k=2/(period+1)
+ ema=sum(closes[:period])/period
+ for price in closes[period:]:ema=price*k+ema*(1-k)
+ return ema
+def select_best_entry(side,last,bos_level,fvg_exists,fvg_mid,ema50):
+ def pct_diff(a,b):return abs(a-b)/b*100 if b else 999
+ if fvg_exists and pct_diff(fvg_mid,bos_level)<0.8:return fvg_mid,"FVG 50% + BOS Confluence 🔥"
+ if pct_diff(ema50,bos_level)<1.0:return ema50,"EMA50 + BOS Confluence 🔥"
+ if fvg_exists:return fvg_mid,"FVG 50% (Imbalance Fill)"
+ return bos_level,"BOS Retest / Major S/R"
+# V4.4 ENGINE
 def bal():
  try:
   b=ex.fetch_balance(params={'accountType':'UNIFIED'})
@@ -31,137 +84,140 @@ def bal():
      v=c.get('equity') or c.get('walletBalance')
      if v:return float(v)
   return float(b.get('total',{}).get('USDT',0) or 0)
- except:return 0
-def send(m):
- try:requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",data={"chat_id":CHAT_ID,"text":m[:3900]},timeout=15)
- except:pass
-def fmt(p):
- if not p:return "N/A"
- if p<0.01:return f"${p:.6f}"
- if p<1:return f"${p:.5f}"
- if p<100:return f"${p:.4f}"
- return f"${p:.2f}"
-def ohlc(s,t,l=100):
- try:return ex.fetch_ohlcv(s,t,limit=l)
- except:return None
-def price(s):
- try:return float(ex.fetch_ticker(s)['last'])
- except:return None
-def rsi(cs,p=14):
- if len(cs)<p+1:return 50
- g=[];l=[]
- for i in range(1,len(cs)):
-  d=cs[i]-cs[i-1];g.append(max(d,0));l.append(max(-d,0))
- ag=sum(g[-p:])/p;al=sum(l[-p:])/p
- return 70 if al==0 else 100-(100/(1+ag/al))
-def ema(cs,p=50):
- if len(cs)<p:return cs[-1]
- k=2/(p+1);e=sum(cs[:p])/p
- for x in cs[p:]:e=x*k+e*(1-k)
- return e
+ except:return 0.0
 def set_real_sl_tp(sym, sl, tp):
  try:
   m=ex.market(sym)
-  sid=m['id']
-  sl_p=str(ex.price_to_precision(sym, sl))
-  tp_p=str(ex.price_to_precision(sym, tp))
   ex.private_post_v5_position_trading_stop({
-   'category':'linear','symbol':sid,
-   'stopLoss':sl_p,'takeProfit':tp_p,
+   'category':'linear','symbol':m['id'],
+   'stopLoss':str(ex.price_to_precision(sym, sl)),
+   'takeProfit':str(ex.price_to_precision(sym, tp)),
    'tpslMode':'Full','positionIdx':0
   })
   return True
  except Exception as e:
-  print(f"SLTP fail {sym} {e}")
-  return False
+  print(f"SLTP fail {sym} {e}");return False
 def set_be(sym,en):
  try:
   m=ex.market(sym)
-  en_p=str(ex.price_to_precision(sym,en))
   ex.private_post_v5_position_trading_stop({
    'category':'linear','symbol':m['id'],
-   'stopLoss':en_p,'tpslMode':'Full','positionIdx':0
+   'stopLoss':str(ex.price_to_precision(sym,en)),
+   'tpslMode':'Full','positionIdx':0
   })
  except:pass
-def smc(sym):
- o1=ohlc(sym,'1h',100)
- if not o1 or len(o1)<60:return None
- c1=[x[4] for x in o1];e1=ema(c1,50);bull1=c1[-1]>e1
- h1="BULLISH" if bull1 else "BEARISH"
- best=None;bs=0
- for tf in SCAN_TFS:
-  o=ohlc(sym,tf,100)
-  if not o or len(o)<60:continue
-  cs=[x[4] for x in o];hs=[x[2] for x in o];ls=[x[3] for x in o];vs=[x[5] for x in o]
-  last=cs[-1];e50=ema(cs,50);rv=rsi(cs,14)
-  vma=sum(vs[-20:])/20 if len(vs)>=20 else vs[-1]
-  ph=max(hs[-21:-1]);pl=min(ls[-21:-1])
-  fvg_bull=hs[-3]<ls[-1];fvg_bear=ls[-3]>hs[-1]
-  fvg_mid=(hs[-3]+ls[-1])/2 if fvg_bull else (ls[-3]+hs[-1])/2 if fvg_bear else last
-  above=last>e50;setup=[]
-  setup.append("Above 50EMA" if above else "Below 50EMA")
-  setup.append(f"RSI {rv:.1f}")
-  setup.append("Vol OK" if vs[-1]>vma else "Vol Low")
-  if fvg_bull or fvg_bear:setup.append("FVG")
-  if last>ph or last<pl:setup.append("BOS")
-  score=0
-  if last>ph:
-   if above:score+=1
-   if 45<rv<78:score+=1
-   if vs[-1]>vma*1.05:score+=1
-   if fvg_bull:score+=1
-   if bull1:score+=2
-   if score>=4 and score>bs:
-    entry=fvg_mid if fvg_bull and abs(fvg_mid-ph)/ph<0.008 else ph
-    sl=min(ls[-10:]);risk=entry-sl
-    if risk<=0 or risk/entry<0.005:risk=entry*0.012;sl=entry-risk
-    tp1=entry+risk*1.5;tp2=entry+risk*3
-    bs=score;best={"sym":sym,"side":"LONG","entry":entry,"sl":sl,"tp1":tp1,"tp2":tp2,"tf":tf,"score":score,"rsi":rv,"above_ema":above,"h1":h1,"setup":", ".join(setup),"price":last,"be":False,"amt":0}
-  elif last<pl:
-   if not above:score+=1
-   if 22<rv<55:score+=1
-   if vs[-1]>vma*1.05:score+=1
-   if fvg_bear:score+=1
-   if not bull1:score+=2
-   if score>=4 and score>bs:
-    entry=fvg_mid if fvg_bear and abs(fvg_mid-pl)/pl<0.008 else pl
-    sl=max(hs[-10:]);risk=sl-entry
-    if risk<=0 or risk/entry<0.005:risk=entry*0.012;sl=entry+risk
-    tp1=entry-risk*1.5;tp2=entry-risk*3
-    bs=score;best={"sym":sym,"side":"SHORT","entry":entry,"sl":sl,"tp1":tp1,"tp2":tp2,"tf":tf,"score":score,"rsi":rv,"above_ema":above,"h1":h1,"setup":", ".join(setup),"price":last,"be":False,"amt":0}
- return best
-def calc_lev(entry,sl,b):
+def calc_lev_v44(entry,sl,b):
  slp=abs(entry-sl)/entry if entry else 0.01
- raw=0.20/slp;lev=max(5,min(int(raw),10))
- margin=b*0.05
+ raw=0.20/slp
+ lev=max(5,min(int(raw),10))
+ margin=b*PCT_PER_TRADE
  if margin*lev*slp>margin*0.20:margin=(margin*0.20)/(lev*slp)
  if margin<0.6:margin=0.6
- if margin>b*0.05:margin=b*0.05
+ if margin>b*PCT_PER_TRADE:margin=b*PCT_PER_TRADE
  return lev,margin
-def open_trade(tr):
+# V3.2.5 STRATEGY 100% SAME
+def pro_smc_analysis(symbol):
+ # symbol is like AVAX/USDT:USDT - convert for OKX data
+ raw_sym=symbol.replace(":USDT","")
+ ohlcv_1h=get_ohlcv_raw(raw_sym,'1h',100)
+ if not ohlcv_1h or len(ohlcv_1h)<60:return f"{symbol}: No 1H data",False,None
+ closes_1h=[c[4] for c in ohlcv_1h]
+ ema50_1h=calc_ema_list(closes_1h,50)
+ htf_bull=closes_1h[-1]>ema50_1h
+ htf_trend="BULLISH 🟢" if htf_bull else "BEARISH 🔴"
+ best_score=0;best_msg="";best_trade=None
+ for tf in SCAN_TFS:
+  ohlcv=get_ohlcv_raw(raw_sym,tf,100)
+  if not ohlcv or len(ohlcv)<60:continue
+  closes=[c[4] for c in ohlcv];highs=[c[2] for c in ohlcv];lows=[c[3] for c in ohlcv];vols=[c[5] for c in ohlcv]
+  last=closes[-1];ema50=calc_ema_list(closes,50);rsi=calc_rsi_list(closes,14)
+  vol_ma=sum(vols[-20:])/20 if len(vols)>=20 else vols[-1]
+  ph=max(highs[-30:-5]);pl=min(lows[-30:-5])
+  fvg_bull=highs[-3]<lows[-1];fvg_bear=lows[-3]>highs[-1]
+  fvg_mid_bull=(highs[-3]+lows[-1])/2 if fvg_bull else last
+  fvg_mid_bear=(lows[-3]+highs[-1])/2 if fvg_bear else last
+  score=0;reasons=[]
+  if last>ph:
+   if last>ema50:score+=1;reasons.append("Above 50EMA")
+   if 50<rsi<75:score+=1;reasons.append(f"RSI {rsi:.1f}")
+   if vols[-1]>vol_ma*1.1:score+=1;reasons.append("Vol OK")
+   if fvg_bull:score+=1;reasons.append("FVG")
+   if htf_bull:score+=2;reasons.append("1H Bullish ✅")
+   if score>=4 and score>best_score:
+    best_score=score
+    best_entry,entry_reason=select_best_entry("LONG",last,ph,fvg_bull,fvg_mid_bull,ema50)
+    sl=min(lows[-10:]);risk=best_entry-sl
+    if risk<=0 or risk<best_entry*0.005:risk=best_entry*0.015;sl=best_entry-risk
+    tp1=best_entry+risk*1.5;tp2=best_entry+risk*3
+    sl_pct=(sl-best_entry)/best_entry*100
+    tp1_pct=(tp1-best_entry)/best_entry*100
+    tp2_pct=(tp2-best_entry)/best_entry*100
+    rr=abs(tp1-best_entry)/abs(best_entry-sl) if best_entry!=sl else 0
+    best_trade={"symbol":symbol,"raw":raw_sym,"side":"LONG","entry":best_entry,"sl":sl,"tp1":tp1,"tp2":tp2,"risk":risk,"tf":tf,"entry_reason":entry_reason,"be_done":False,"score":score,"be":False,"amt":0}
+    best_msg=f"*{symbol} - A+ LONG [{tf}]* 🟢\nQuality: {score}/6 HIGH\nPrice: {fmt_price(last)}\nTrend: 1H {htf_trend} | {tf} Above EMA50 | RSI {rsi:.1f}\nSetup: {', '.join(reasons)}\n\n🎯 ENTRY: {fmt_price(best_entry)}\n📍 {entry_reason}\nSL: {fmt_price(sl)} ({sl_pct:+.1f}%)\nTP1: {fmt_price(tp1)} ({tp1_pct:+.1f}%) - Take 50%\nTP2: {fmt_price(tp2)} ({tp2_pct:+.1f}%) - Take rest\nRR: 1:{rr:.1f}\nTrailing ON"
+  elif last<pl:
+   if last<ema50:score+=1;reasons.append("Below 50EMA")
+   if 25<rsi<50:score+=1;reasons.append(f"RSI {rsi:.1f}")
+   if vols[-1]>vol_ma*1.1:score+=1;reasons.append("Vol OK")
+   if fvg_bear:score+=1;reasons.append("FVG")
+   if not htf_bull:score+=2;reasons.append("1H Bearish ✅")
+   if score>=4 and score>best_score:
+    best_score=score
+    best_entry,entry_reason=select_best_entry("SHORT",last,pl,fvg_bear,fvg_mid_bear,ema50)
+    sl=max(highs[-10:]);risk=sl-best_entry
+    if risk<=0 or risk<best_entry*0.005:risk=best_entry*0.015;sl=best_entry+risk
+    tp1=best_entry-risk*1.5;tp2=best_entry-risk*3
+    sl_pct=(sl-best_entry)/best_entry*100
+    tp1_pct=(tp1-best_entry)/best_entry*100
+    tp2_pct=(tp2-best_entry)/best_entry*100
+    rr=abs(tp1-best_entry)/abs(best_entry-sl) if best_entry!=sl else 0
+    best_trade={"symbol":symbol,"raw":raw_sym,"side":"SHORT","entry":best_entry,"sl":sl,"tp1":tp1,"tp2":tp2,"risk":risk,"tf":tf,"entry_reason":entry_reason,"be_done":False,"score":score,"be":False,"amt":0}
+    best_msg=f"*{symbol} - A+ SHORT [{tf}]* 🔴\nQuality: {score}/6 HIGH\nPrice: {fmt_price(last)}\nTrend: 1H {htf_trend} | {tf} Below EMA50 | RSI {rsi:.1f}\nSetup: {', '.join(reasons)}\n\n🎯 ENTRY: {fmt_price(best_entry)}\n📍 {entry_reason}\nSL: {fmt_price(sl)} ({sl_pct:+.1f}%)\nTP1: {fmt_price(tp1)} ({tp1_pct:+.1f}%) - Take 50%\nTP2: {fmt_price(tp2)} ({tp2_pct:+.1f}%) - Take rest\nRR: 1:{rr:.1f}\nTrailing ON"
+ if best_msg:return best_msg,True,best_trade
+ else:return f"*{symbol}* - Ranging ⚪ | 1H: {htf_trend}",False,None
+def handle_new_signal(coin,is_high,trade):
+ if not is_high or not trade:return False,None
+ if coin in active:
+  old=active[coin]
+  if old['side']==trade['side']:return False,f"{coin} already {old['side']} active - skipped ⚪"
+  else:
+   cur_price=price(coin) or old['entry']
+   pnl=(cur_price-old['entry'])/old['entry']*100 if old['side']=="LONG" else (old['entry']-cur_price)/old['entry']*100
+   if pnl>-0.8:return False,f"🛡️ {coin} FLIP BLOCKED: old {old['side']} only {pnl:+.2f}% (need -0.8%)"
+   if trade.get('score',4)<5:return False,f"🛡️ {coin} FLIP BLOCKED: new {trade['side']} only {trade.get('score')}/6 weak (need 5/6+)"
+   if time.time()-last_flip_time.get(coin,0)<5400:
+    remain=int((5400-(time.time()-last_flip_time.get(coin,0)))/60)
+    return False,f"🛡️ {coin} FLIP BLOCKED: cooldown {remain}m left"
+   # pass filters
+   close_single_real(coin)
+   send(f"🔄 FLIP {coin}: {old['side']} -> {trade['side']}\nClosed {old['side']} at {fmt_price(cur_price)} PnL {pnl:+.2f}%")
+   last_flip_time[coin]=time.time()
+ active[coin]=trade
+ return True,None
+def open_trade_auto(tr):
  try:
   b=bal()
   if b<5:send(f"❌ Low balance ${b:.2f}");return None
-  lev,margin=calc_lev(tr['entry'],tr['sl'],b)
-  if margin>b*0.05:margin=b*0.05
-  try:ex.set_leverage(lev,tr['sym'])
+  lev,margin=calc_lev_v44(tr['entry'],tr['sl'],b)
+  if margin>b*PCT_PER_TRADE:margin=b*PCT_PER_TRADE
+  try:ex.set_leverage(lev,tr['symbol'])
   except:pass
-  pr=price(tr['sym'])
+  pr=price(tr['symbol'])
   if not pr:return None
-  try: mkt=ex.market(tr['sym']); min_amt=mkt.get('limits',{}).get('amount',{}).get('min',0.001)
-  except: min_amt=0.001
+  try:mkt=ex.market(tr['symbol']);min_amt=mkt.get('limits',{}).get('amount',{}).get('min',0.001)
+  except:min_amt=0.001
   qty_raw=(margin*lev)/pr
   if qty_raw<min_amt:return None
-  try: qty=float(ex.amount_to_precision(tr['sym'],qty_raw))
-  except: qty=qty_raw
-  if qty*pr<5.6 or qty<min_amt*0.98:return None
+  try:qty=float(ex.amount_to_precision(tr['symbol'],qty_raw))
+  except:qty=qty_raw
+  if qty*pr<MIN_NOTIONAL or qty<min_amt*0.98:return None
   side='buy' if tr['side']=='LONG' else 'sell'
-  ex.create_market_order(tr['sym'],side,qty,params={'positionIdx':0})
+  ex.create_market_order(tr['symbol'],side,qty,params={'positionIdx':0})
   time.sleep(1.2)
-  set_real_sl_tp(tr['sym'], tr['sl'], tr['tp2'])
+  set_real_sl_tp(tr['symbol'], tr['sl'], tr['tp2'])
   tr['entry']=pr;tr['amt']=qty;tr['lev']=lev;tr['margin']=margin
   return tr
- except Exception as e:send(f"❌ OPEN FAIL {tr['sym']} {e}");return None
+ except Exception as e:send(f"❌ OPEN FAIL {tr['symbol']} {e}");return None
 def close_single_real(sym):
  try:
   poss=ex.fetch_positions(params={'accountType':'UNIFIED','symbol':sym})
@@ -191,28 +247,10 @@ def close_all_real():
  except:return 0
 def build_msg(tr,mode="AUTO"):
  entry=tr['entry'];sl=tr['sl'];tp1=tr['tp1'];tp2=tr['tp2']
- if tr['side']=="LONG":slp=(sl-entry)/entry*100;tp1p=(tp1-entry)/entry*100;tp2p=(tp2-entry)/entry*100
- else:slp=(sl-entry)/entry*100;tp1p=(tp1-entry)/entry*100;tp2p=(tp2-entry)/entry*100
- qual="HIGH" if tr['score']>=4 else "MED"
- ema_txt="Above EMA50" if tr['above_ema'] else "Below EMA50"
- msg=(f"🔥 {mode} {tr['sym'].split('/')[0]}/USDT - A+ {tr['side']} [{tr['tf']}] 🟢\n\n"
- f"Quality: {tr['score']}/6 {qual}\n"
- f"Price: {fmt(tr['price'])}\n"
- f"Trend: 1H {tr['h1']} | {tr['tf']} {ema_txt} | RSI {tr['rsi']:.1f}\n"
- f"Setup: {tr['setup']}\n\n"
- f"🎯 ENTRY: {fmt(entry)}\n"
- f"   FVG 50% + BOS Confluence 🔥\n"
- f"🛑 SL: {fmt(sl)} ({slp:.2f}%)\n"
- f"TP1: {fmt(tp1)} (+{abs(tp1p):.2f}%) - Take 50%\n"
- f"TP2: {fmt(tp2)} (+{abs(tp2p):.2f}%) - Take rest\n"
- f"RR: 1:1.5\nTrailing ON - REAL SL/TP ON BYBIT ✅\n"
- f"💰 Bal ${bal():.2f} | Lev {tr.get('lev',5)}x | {len(active)}/{MAX_TRADES}")
+ slp=(sl-entry)/entry*100;tp1p=(tp1-entry)/entry*100;tp2p=(tp2-entry)/entry*100
+ msg=(f"*{tr['symbol']} - A+ {tr['side']} [{tr['tf']}]* 🟢\nQuality: {tr['score']}/6 HIGH\nPrice: {fmt_price(price(tr['symbol']) or entry)}\nTrend: 1H {tr['tf']} | RSI\nSetup: {tr['entry_reason']}\n\n🎯 ENTRY: {fmt_price(entry)}\n📍 {tr['entry_reason']}\nSL: {fmt_price(sl)} ({slp:+.1f}%)\nTP1: {fmt_price(tp1)} ({tp1p:+.1f}%) - Take 50%\nTP2: {fmt_price(tp2)} ({tp2p:+.1f}%) - Take rest\nRR: 1:1.5\nTrailing ON - REAL SL/TP ON BYBIT ✅\n💰 Bal ${bal():.2f} | Lev {tr.get('lev',5)}x | {len(active)}/{MAX_TRADES}")
  return msg
-def pnl_report(title,items):
- if not items:return f"📅 {title}\n💰 ${bal():.2f}\n⚪ No closed trades"
- pnl=sum([x['pnl'] for x in items]);wins=len([x for x in items if x['pnl']>0])
- det="\n".join([f"{x['dt'].strftime('%H:%M')} {x['sym'].split('/')[0]} {x['res']} {x['pnl']:+.2f}%" for x in items[-10:]])
- return f"📅 {title}\n💰 ${bal():.2f} | {len(items)} trades | {wins}W-{len(items)-wins}L | PnL {pnl:+.2f}%\n{det}"
+# recover
 try:
  poss=ex.fetch_positions(params={'accountType':'UNIFIED'})
  for p in poss:
@@ -222,12 +260,11 @@ try:
    if en==0:continue
    sd="LONG" if p.get('side','').lower() in ['long','buy'] or sz>0 else "SHORT"
    if sz<0:sd="SHORT"
-   active[sym]={"sym":sym,"side":sd,"entry":en,"sl":en*0.97 if sd=="LONG" else en*1.03,"tp1":en*1.02 if sd=="LONG" else en*0.98,"tp2":en*1.04 if sd=="LONG" else en*0.96,"tf":"REC","score":5,"rsi":50,"above_ema":True,"h1":"REC","setup":"Recovered","price":en,"be":False,"amt":abs(sz),"lev":5,"margin":0}
-   # fix old positions without SLTP
+   active[sym]={"symbol":sym,"raw":sym,"side":sd,"entry":en,"sl":en*0.97 if sd=="LONG" else en*1.03,"tp1":en*1.02 if sd=="LONG" else en*0.98,"tp2":en*1.04 if sd=="LONG" else en*0.96,"tf":"REC","score":5,"be_done":False,"be":False,"amt":abs(sz),"lev":5,"margin":0,"entry_reason":"Recovered"}
    set_real_sl_tp(sym, active[sym]['sl'], active[sym]['tp2'])
 except:pass
-send(f"🚀 V4.4 FIXED REAL SL/TP LIVE\n💰 REAL ${bal():.2f}\nActive {len(active)}/{MAX_TRADES}\nNow sets real SL/TP on Bybit ✅ | FLIP ON | STRICT 5% | BCH")
-last_id=0;last_scan=0;last_chk=0
+send(f"🚀 V3.2.5 x V4.4 HYBRID LIVE\n💰 ${bal():.2f} Active {len(active)}/{MAX_TRADES}\nStrategy V3.2.5 (12 coins + FILTERED FLIP) + Engine V4.4 (5-10x 5% REAL SLTP) ✅")
+last_id=0
 while True:
  try:
   url=f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={last_id+1}&timeout=20"
@@ -236,73 +273,78 @@ while True:
    last_id=u["update_id"]
    txt=u.get("message",{}).get("text","") or ""
    if not txt:continue
-   low=txt.lower().strip()
+   low=txt.lower().strip();parts=txt.strip().split()
    if low in ["/start","/help"]:
-    send(f"🤖 V4.4 FIXED REAL SL/TP\nState: {'⏸️ PAUSED' if paused else '▶️ PLAYING'} | REAL ${bal():.2f}\n\n/scan /trades /bal /today /week /month /pause /play /closeall /status\nFLIP ON - 5% ONLY - REAL SLTP ✅")
-   elif low=="/status":
-    send(f"📊 STATUS\n{'⏸️ PAUSED' if paused else '▶️ PLAYING'}\n💰 REAL ${bal():.2f}\nActive {len(active)}/{MAX_TRADES}\nAuto 5min FLIP ON STRICT 5% REAL SLTP ✅")
-   elif low=="/pause":paused=True;send(f"⏸️ PAUSED ${bal():.2f}")
-   elif low in ["/play","/resume","/unpause"]:paused=False;send(f"▶️ RESUMED 5min FLIP ON REAL SLTP ${bal():.2f}")
-   elif low=="/bal":send(f"💰 REAL ${bal():.2f} {len(active)}/{MAX_TRADES}")
+    send(f"🤖 V3.2.5 x V4.4 HYBRID\nState: {'⏸️ PAUSED' if paused else '▶️ PLAYING'} | ${bal():.2f}\n/scan /trades /bal /pause /play /closeall /status /price /coin\n12 coins FILTERED FLIP + 5-10x 5% REAL SLTP ✅")
+   elif low=="/status":send(f"📊 STATUS\n{'⏸️ PAUSED' if paused else '▶️ PLAYING'}\n💰 ${bal():.2f}\nActive {len(active)}/{MAX_TRADES}\nV3.2.5 Strategy (12 coins) + V4.4 Engine (5-10x 5% REAL SLTP)")
+   elif low=="/pause":paused=True;send(f"⏸️ PAUSED ${bal():.2f} auto stopped")
+   elif low in ["/play","/resume","/unpause"]:paused=False;send(f"▶️ RESUMED ${bal():.2f} auto 15m FLIP ON")
+   elif low=="/bal":send(f"💰 REAL ${bal():.2f} {len(active)}/{MAX_TRADES} Lev 5-10x 5% STRICT")
    elif low=="/trades":
     if not active:send(f"⚪ No active ${bal():.2f}")
     else:
      for c,t in active.items():
       cur=price(c);pn=(cur-t['entry'])/t['entry']*100 if cur else 0
       if t['side']=="SHORT":pn=-pn
-      send(f"📊 {c} {t['side']} {pn:+.2f}% BE:{t['be']}\nEntry {fmt(t['entry'])} → {fmt(cur)}\nSL {fmt(t['sl'])} TP2 {fmt(t['tp2'])}")
-   elif low=="/today":
-    today=datetime.now(WAT).strftime("%Y-%m-%d");items=[x for x in closed if x['date']==today];send(pnl_report(f"TODAY {today}",items))
-   elif low=="/week":
-    now=datetime.now(WAT);start=now-timedelta(days=now.weekday());items=[x for x in closed if x['dt']>=start];send(pnl_report(f"WEEK {start.strftime('%m/%d')}-{now.strftime('%m/%d')}",items))
-   elif low=="/month":
-    now=datetime.now(WAT);items=[x for x in closed if x['dt'].month==now.month and x['dt'].year==now.year];send(pnl_report(f"MONTH {now.strftime('%Y-%m')}",items))
+      send(f"📊 {c} {t['side']} {pn:+.2f}% BE:{t['be']}\nEntry {fmt_price(t['entry'])} → {fmt_price(cur)}\nSL {fmt_price(t['sl'])} TP2 {fmt_price(t['tp2'])} Lev {t.get('lev',5)}x")
    elif low in ["/stop","/closeall","/close"]:
-    n=close_all_real();active.clear();send(f"✅ CLOSED {n} REAL on Bybit\n💰 ${bal():.2f}")
+    n=close_all_real();active.clear();send(f"✅ CLOSED {n} REAL on Bybit 💰 ${bal():.2f}")
+   elif low.startswith("/price"):
+    if len(parts)<2:send("Use: /price BTC")
+    else:
+     coin=parts[1].upper()+"/USDT:USDT";p=price(coin);send(f"💰 {parts[1].upper()} = {fmt_price(p)}" if p else "No data")
+   elif low.startswith("/coin"):
+    if len(parts)<2:send("Use: /coin AVAX")
+    else:
+     coin=parts[1].upper()+"/USDT:USDT";send(f"🔍 Scanning {coin}...");a,ok,tr=pro_smc_analysis(coin);send(a)
+     if ok:
+      allowed,skip_msg=handle_new_signal(coin,ok,tr)
+      if allowed:
+       ot=open_trade_auto(tr)
+       if ot:tr.update(ot);active[tr['symbol']]=tr;send(build_msg(tr,"🚀 MANUAL"))
+      elif skip_msg:send(skip_msg)
    elif low=="/scan":
-    if paused:send(f"⏸️ PAUSED use /play");continue
-    send(f"🔍 SCAN 7 coins BCH STRICT 5% REAL SLTP...");found=[]
+    if paused:send("⏸️ PAUSED use /play");continue
+    send("🔍 SCAN 12 coins V3.2.5 + V4.4 ENGINE FILTERED...")
+    full="";hq=[];blocked=[]
     for coin in WATCHLIST:
-     tr=smc(coin)
-     if tr:found.append(tr)
-    found=sorted(found,key=lambda x:x['score'],reverse=True);opened=0
-    for tr in found:
-     if tr['sym'] in active:
-      old=active[tr['sym']]
-      if old['side']!=tr['side']:
-       cur=price(tr['sym']);pnl=(cur-old['entry'])/old['entry']*100 if cur else 0
-       if old['side']=="SHORT":pnl=-pnl
-       close_single_real(tr['sym']);del active[tr['sym']]
-       closed.append({"date":datetime.now(WAT).strftime("%Y-%m-%d"),"dt":datetime.now(WAT),"sym":tr['sym'],"side":old['side'],"res":"FLIP","pnl":pnl})
-       send(f"🔄 AUTO FLIP {tr['sym'].split('/')[0]}/USDT: {old['side']} -> {tr['side']} PnL {pnl:+.2f}%")
-      else:continue
-     if len(active)>=MAX_TRADES:break
-     ot=open_trade(tr)
-     if ot:tr.update(ot);active[tr['sym']]=tr;send(build_msg(tr,"🚀 MANUAL"));opened+=1
-    if opened==0:send("⚪ No new A+ setups")
+     analysis,is_high,trade=pro_smc_analysis(coin)
+     full+=f"\n\n{analysis}\n---"
+     if is_high and trade:
+      if coin in active and active[coin]['side']==trade['side']:hq.append(f"{coin}({trade['tf']})");continue
+      allowed,skip_msg=handle_new_signal(coin,is_high,trade)
+      if allowed:
+       ot=open_trade_auto(trade)
+       if ot:trade.update(ot);active[trade['symbol']]=trade;hq.append(f"{coin}({trade['tf']}) {trade['lev']}x");full+=f"\n✅ OPENED {coin} {trade['lev']}x REAL SLTP ✅"
+      elif skip_msg:blocked.append(skip_msg)
+     time.sleep(0.5)
+    send(full+(f"\n\n🔥 A+: {', '.join(hq)}" if hq else "\n\n⚪ No new A+")+(f"\n\n🛡️ Blocked: {'; '.join(blocked[:3])}" if blocked else ""))
   now_ts=time.time();now_wat=datetime.now(WAT)
-  if not paused and now_ts-last_scan>AUTO_SCAN_SEC and len(active)<=MAX_TRADES:
-   last_scan=now_ts;found=[]
+  if not paused and now_ts-last_scan>AUTO_SCAN_SEC:
+   last_scan=now_ts
    for coin in WATCHLIST:
-    tr=smc(coin)
-    if tr:found.append(tr)
-   found=sorted(found,key=lambda x:x['score'],reverse=True)
-   for tr in found:
-    if tr['sym'] in active:
-     old=active[tr['sym']]
-     if old['side']!=tr['side']:
-      cur=price(tr['sym']);pnl=(cur-old['entry'])/old['entry']*100 if cur else 0
-      if old['side']=="SHORT":pnl=-pnl
-      close_single_real(tr['sym']);del active[tr['sym']]
-      closed.append({"date":now_wat.strftime("%Y-%m-%d"),"dt":now_wat,"sym":tr['sym'],"side":old['side'],"res":"FLIP","pnl":pnl})
-      ot=open_trade(tr)
-      if ot:tr.update(ot);active[tr['sym']]=tr;send(f"🔄 AUTO FLIP {tr['sym'].split('/')[0]}/USDT: {old['side']} -> {tr['side']} PnL {pnl:+.2f}%\n\n"+build_msg(tr,"🤖 LIVE ALERT"))
-     else:continue
-    if len(active)>=MAX_TRADES:break
-    ot=open_trade(tr)
-    if ot:tr.update(ot);active[tr['sym']]=tr;send(build_msg(tr,"🤖 LIVE ALERT"))
-  if now_ts-last_chk>30:
-   last_chk=now_ts
+    analysis,is_high,trade=pro_smc_analysis(coin)
+    if is_high and trade:
+     if coin in active and active[coin]['side']==trade['side']:continue
+     if last_trade_alert.get(coin,0)<now_ts-14400:
+      old=active.get(coin)
+      if old and old['side']!=trade['side']:
+       cur_price=price(coin) or old['entry']
+       pnl=(cur_price-old['entry'])/old['entry']*100 if old['side']=="LONG" else (old['entry']-cur_price)/old['entry']*100
+       if pnl<=-0.8 and trade.get('score',4)>=5 and time.time()-last_flip_time.get(coin,0)>=5400:
+        close_single_real(coin)
+        if coin in active:del active[coin]
+        closed.append({"date":now_wat.strftime("%Y-%m-%d"),"dt":now_wat,"sym":coin,"side":old['side'],"res":"FLIP","pnl":pnl})
+        send(f"🔄 AUTO FLIP {coin}: {old['side']} -> {trade['side']} PnL {pnl:+.2f}%")
+        last_flip_time[coin]=time.time()
+        ot=open_trade_auto(trade)
+        if ot:trade.update(ot);active[trade['symbol']]=trade;send(f"🚨 LIVE ALERT\n\n{analysis}\n\n✅ AUTO OPENED {coin} {trade['lev']}x REAL SLTP ✅");last_trade_alert[coin]=now_ts
+       else:continue
+      else:
+       send(f"🚨 LIVE ALERT\n\n{analysis}")
+       ot=open_trade_auto(trade)
+       if ot:trade.update(ot);active[trade['symbol']]=trade;last_trade_alert[coin]=now_ts
+    time.sleep(0.5)
    for sym,t in list(active.items()):
     cur=price(sym)
     if not cur:continue
@@ -312,18 +354,17 @@ while True:
       try:
        amt=float(ex.amount_to_precision(sym,t['amt']*0.5));side='sell' if sd=="LONG" else 'buy'
        ex.create_market_order(sym,side,amt,params={'reduceOnly':True,'positionIdx':0})
-       t['amt']*=0.5;t['be']=True;set_be(sym,en)
-       closed.append({"date":now_wat.strftime("%Y-%m-%d"),"dt":now_wat,"sym":sym,"side":sd,"res":"TP1+BE","pnl":pnl*0.5})
-       send(f"🎯 {sym.split('/')[0]}/USDT TP1 HIT! {fmt(cur)} {pnl:+.2f}%\nTake 50% SL->BE REAL ON BYBIT ✅\n💰 ${bal():.2f}")
+       t['amt']*=0.5;t['be']=True;t['be_done']=True;set_be(sym,en)
+       send(f"🎯 {sym} TP1 HIT! {fmt_price(cur)} {pnl:+.2f}% Take 50% SL->BE REAL ✅ 💰 ${bal():.2f}")
       except:pass
     if sd=="LONG":
-     if cur>=t['tp2']:close_single_real(sym);del active[sym];closed.append({"date":now_wat.strftime("%Y-%m-%d"),"dt":now_wat,"sym":sym,"side":sd,"res":"TP2","pnl":pnl});send(f"🎯 TP2 {sym.split('/')[0]} {pnl:+.2f}% 🎉 REAL ${bal():.2f}")
+     if cur>=t['tp2']:close_single_real(sym);del active[sym];send(f"🎯 TP2 {sym} {pnl:+.2f}% 🎉 REAL ${bal():.2f}")
      elif cur<=t['sl']:
-      if t['be']:close_single_real(sym);del active[sym];send(f"🔒 BE STOPPED {sym.split('/')[0]} breakeven ${bal():.2f}")
-      else:close_single_real(sym);del active[sym];closed.append({"date":now_wat.strftime("%Y-%m-%d"),"dt":now_wat,"sym":sym,"side":sd,"res":"SL","pnl":pnl});send(f"❌ SL {sym.split('/')[0]} {pnl:+.2f}% ${bal():.2f}")
+      if t['be']:close_single_real(sym);del active[sym];send(f"🔒 BE STOPPED {sym} breakeven ${bal():.2f}")
+      else:close_single_real(sym);del active[sym];send(f"❌ SL {sym} {pnl:+.2f}% ${bal():.2f}")
     else:
-     if cur<=t['tp2']:close_single_real(sym);del active[sym];closed.append({"date":now_wat.strftime("%Y-%m-%d"),"dt":now_wat,"sym":sym,"side":sd,"res":"TP2","pnl":pnl});send(f"🎯 TP2 {sym.split('/')[0]} {pnl:+.2f}% 🎉 REAL ${bal():.2f}")
+     if cur<=t['tp2']:close_single_real(sym);del active[sym];send(f"🎯 TP2 {sym} {pnl:+.2f}% 🎉 REAL ${bal():.2f}")
      elif cur>=t['sl']:
-      if t['be']:close_single_real(sym);del active[sym];send(f"🔒 BE STOPPED {sym.split('/')[0]} breakeven ${bal():.2f}")
-      else:close_single_real(sym);del active[sym];closed.append({"date":now_wat.strftime("%Y-%m-%d"),"dt":now_wat,"sym":sym,"side":sd,"res":"SL","pnl":pnl});send(f"❌ SL {sym.split('/')[0]} {pnl:+.2f}% ${bal():.2f}")
+      if t['be']:close_single_real(sym);del active[sym];send(f"🔒 BE STOPPED {sym} breakeven ${bal():.2f}")
+      else:close_single_real(sym);del active[sym];send(f"❌ SL {sym} {pnl:+.2f}% ${bal():.2f}")
  except Exception as e:print(f"loop {e}");time.sleep(3)
