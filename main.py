@@ -4,7 +4,7 @@ from flask import Flask
 from threading import Thread
 app=Flask(__name__)
 @app.route('/')
-def _():return "V3.2.6 FIXED"
+def _():return "V3.2.7 FIXED"
 def _r():app.run(host='0.0.0.0',port=10000)
 Thread(target=_r,daemon=True).start()
 TT=os.getenv("TELEGRAM_TOKEN")or os.getenv("BOT_TOKEN")or""
@@ -202,7 +202,7 @@ try:
    act[sy]={"symbol":sy,"side":sd,"entry":en,"sl":en*0.97 if sd=="LONG" else en*1.03,"tp1":en*1.02 if sd=="LONG" else en*0.98,"tp2":en*1.04 if sd=="LONG" else en*0.96,"tf":"REC","score":5,"be":False,"amt":abs(sz),"lev":5,"margin":0,"entry_reason":"Recovered"}
    set_sl(sy,act[sy]['sl'],act[sy]['tp2'])
 except:0
-snd(f"🚀 V3.2.6 FIXED DETAILED LIVE ${bal():.2f} {len(act)}/{MAXT} /pause /play /closeall /pnl OK")
+snd(f"🚀 V3.2.7 FIXED /trade OK ${bal():.2f} {len(act)}/{MAXT}")
 while True:
  try:
   url=f"https://api.telegram.org/bot{TT}/getUpdates?offset={lid+1}&timeout=20";r=requests.get(url,timeout=25).json()
@@ -210,22 +210,32 @@ while True:
    lid=u["update_id"];txt=u.get("message",{}).get("text","")or""
    if not txt:continue
    low=txt.lower().strip();pts=txt.strip().split()
-   if low in ["/start","/help"]:snd(f"🤖 V3.2.6 FIXED {'PAUSED' if ps else 'PLAYING'} ${bal():.2f} {len(act)}/{MAXT} /scan /trades /bal /pause /play /closeall /status /price /coin /pnl /daily /today /weekly /monthly")
+   if low in ["/start","/help"]:snd(f"🤖 V3.2.7 FIXED {'PAUSED' if ps else 'PLAYING'} ${bal():.2f} {len(act)}/{MAXT} /scan /trade /trades /bal /pause /play /closeall /status /price /coin /pnl /daily /today /weekly /monthly")
    elif low=="/status":snd(f"📊 STATUS {'PAUSED' if ps else 'PLAYING'} ${bal():.2f} Active {len(act)}/{MAXT} Today {len([c for c in cl if c['date']==datetime.now(W).strftime('%Y-%m-%d')])}")
-   elif low in ["/pnl","/report","/daily","/today","/weekly","/monthly","/trades"]:
-    if low in ["/pnl","/report"]:snd(rep("daily")+"\n\n"+rep("weekly")+"\n\n"+rep("monthly"))
-    elif low in ["/daily","/today"]:snd(rep("daily"))
-    elif low=="/trades":
-     if not act:snd(f"⚪ No active ${bal():.2f}\n\n"+rep("daily"))
-     else:
-      msg=""
-      for c_,t in act.items():
-       cur=prc(c_);pn=(cur-t['entry'])/t['entry']*100 if cur else 0
-       if t['side']=="SHORT":pn=-pn
-       msg+=f"📊 {c_} {t['side']} {pn:+.2f}% BE:{t['be']} {fp(t['entry'])}->{fp(cur)} SL{fp(t['sl'])} TP2{fp(t['tp2'])} Lev{t.get('lev',5)}x\n"
-      snd(msg+"\n"+rep("daily"))
-    elif low=="/weekly":snd(rep("weekly"))
-    else:snd(rep("monthly"))
+   elif low in ["/pnl","/report","/daily","/today","/weekly","/monthly","/trades","/trade","/activetrade","/active"]:
+    try:
+     if low in ["/trades","/trade","/activetrade","/active"]:
+      if not act:
+       try:
+        poss=ex.fetch_positions(params={'accountType':'UNIFIED'})
+        real=[p['symbol'] for p in poss if float(p.get('contracts',0)or 0)!=0]
+        if real:snd(f"🔄 Sync Bybit has {len(real)}: {', '.join(real)}\n${bal():.2f}\n\n"+rep("daily"))
+        else:snd(f"⚪ No active ${bal():.2f}\n\n"+rep("daily"))
+       except:snd(f"⚪ No active ${bal():.2f}\n\n"+rep("daily"))
+      else:
+       msg=""
+       for c_,t in list(act.items()):
+        try:
+         cur=prc(c_) or t['entry'];pn=(cur-t['entry'])/t['entry']*100
+         if t['side']=="SHORT":pn=-pn
+         msg+=f"📊 {c_} {t['side']} {pn:+.2f}% BE:{t['be']} {fp(t['entry'])}->{fp(cur)} SL{fp(t['sl'])} TP2{fp(t['tp2'])}\n"
+        except:msg+=f"📊 {c_} {t['side']} err\n"
+       snd(msg+"\n"+rep("daily"))
+     elif low in ["/pnl","/report"]:snd(rep("daily")+"\n\n"+rep("weekly")+"\n\n"+rep("monthly"))
+     elif low in ["/daily","/today"]:snd(rep("daily"))
+     elif low=="/weekly":snd(rep("weekly"))
+     else:snd(rep("monthly"))
+    except Exception as e:snd(f"cmd err {e}")
    elif low=="/pause":ps=True;snd(f"⏸️ PAUSED ${bal():.2f} Active {len(act)}")
    elif low in ["/play","/resume","/unpause"]:ps=False;snd(f"▶️ RESUMED ${bal():.2f}")
    elif low=="/bal":snd(f"💰 ${bal():.2f} {len(act)}/{MAXT} 5-10x 5%")
@@ -239,7 +249,7 @@ while True:
      co=pts[1].upper()+"/USDT:USDT";snd(f"🔍 {co}...");a,ok,tr=smc(co);snd(a)
      if ok:
       al,msg=handle(co,ok,tr)
-      if al:ot=open_auto(tr);act[tr['symbol']]=ot if ot else act.get(tr['symbol']);snd(f"✅ AUTO OPEN {tr['symbol']} {tr['side']} {tr['tf']}\nENTRY {fp(ot['entry']) if ot else fp(tr['entry'])} SL {fp(tr['sl'])}\nTP1 {fp(tr['tp1'])} TP2 {fp(tr['tp2'])}\nBal ${bal():.2f} Lev {ot['lev'] if ot else 5}x 5% STRICT\nSL/TP SET ON BYBIT ✅" if ot else "❌ fail")
+      if al:ot=open_auto(tr);act[tr['symbol']]=ot if ot else act.get(tr['symbol']);snd(f"✅ AUTO OPEN {tr['symbol']} {tr['side']} {tr['tf']}\nENTRY {fp(ot['entry']) if ot else fp(tr['entry'])} SL {fp(tr['sl'])}\nTP1 {fp(tr['tp1'])} TP2 {fp(tr['tp2'])}\nBal ${bal():.2f} Lev {ot['lev'] if ot else 5}x\nSL/TP SET ON BYBIT ✅" if ot else "❌ fail")
       elif msg:snd(msg)
    elif low=="/scan":
     if ps:snd("⏸️ PAUSED use /play");continue
@@ -272,7 +282,311 @@ while True:
       cur=prc(co)or o['entry'];pn=(cur-o['entry'])/o['entry']*100 if o['side']=="LONG" else (o['entry']-cur)/o['entry']*100
       if pn<=-0.8 and tr.get('score',4)>=5 and time.time()-lft.get(co,0)>=5400:close_one(co,"FLIP");snd(f"🔄 FLIP {co} {o['side']}->{tr['side']} {pn:+.2f}%");lft[co]=time.time();ot=open_auto(tr);act[tr['symbol']]=ot if ot else act.get(tr['symbol']);snd(f"{an}\n✅ FLIP {co} {ot['lev'] if ot else 5}x" if ot else "");lta[co]=now_ts
       else:continue
-     else:lta[co]=now_ts;snd(an);ot=open_auto(tr);act[tr['symbol']]=ot if ot else act.get(tr['symbol']);snd(f"✅ AUTO OPEN {tr['symbol']} {tr['side']} {tr['tf']}\nENTRY {fp(ot['entry']) if ot else fp(tr['entry'])} SL {fp(tr['sl'])}\nTP1 {fp(tr['tp1'])} TP2 {fp(tr['tp2'])}\nBal ${bal():.2f} Lev {ot['lev'] if ot else 5}x 5% STRICT\nSL/TP SET ON BYBIT ✅" if ot else "")
+     else:lta[co]=now_ts;snd(an);ot=open_auto(tr);act[tr['symbol']]=ot if ot else act.get(tr['symbol']);snd(f"✅ AUTO OPEN {tr['symbol']} {tr['side']} {tr['tf']}\nENTRY {fp(ot['entry']) if ot else fp(tr['entry'])} SL {fp(tr['sl'])}\nTP1 {fp(tr['tp1'])} TP2 {fp(tr['tp2'])}\nBal ${bal():.2f} Lev {ot['lev'] if ot else 5}x\nSL/TP SET ON BYBIT ✅" if ot else "")
+    time.sleep(0.4)
+   for sy,t in list(act.items()):
+    cur=prc(sy)
+    if not cur:continue
+    en=t['entry'];sd=t['side'];pn=(cur-en)/en*100 if sd=="LONG" else (en-cur)/en*100
+    if not t['be']:
+     if (sd=="LONG" and cur>=t['tp1']) or (sd=="SHORT" and cur<=t['tp1']):
+      try:amt=float(ex.amount_to_precision(sy,t['amt']*0.5));side='sell' if sd=="LONG" else 'buy';ex.create_market_order(sy,side,amt,params={'reduceOnly':True,'positionIdx':0});t['amt']*=0.5;t['be']=True;set_be(sy,en);snd(f"🎯 {sy} TP1 {fp(cur)} {pn:+.2f}% 50% BE ${bal():.2f}")
+      except:0
+    if sd=="LONG":
+     if cur>=t['tp2']:close_one(sy,"TP2");snd(f"🎯 TP2 {sy} {pn:+.2f}% 🎉 ${bal():.2f}\n\n"+rep("daily"))
+     elif cur<=t['sl']:
+      if t['be']:close_one(sy,"BE");snd(f"🔒 BE {sy} ${bal():.2f}")
+      else:close_one(sy,"SL");snd(f"❌ SL {sy} {pn:+.2f}% ${bal():.2f}\n\n"+rep("daily"))
+    else:
+     if cur<=t['tp2']:close_one(sy,"TP2");snd(f"🎯 TP2 {sy} {pn:+.2f}% 🎉 ${bal():.2f}\n\n"+rep("daily"))
+     elif cur>=t['sl']:
+      if t['be']:close_one(sy,"BE");snd(f"🔒 BE {sy} ${bal():.2f}")
+      else:close_one(sy,"SL");snd(f"❌ SL {sy} {pn:+.2f}% ${bal():.2f}\n\n"+rep("daily"))
+ except Exception as e:print(f"loop {e}");time.sleep(3)import os,ccxt,requests,time
+from datetime import datetime,timezone,timedelta
+from flask import Flask
+from threading import Thread
+app=Flask(__name__)
+@app.route('/')
+def _():return "V3.2.7 FIXED"
+def _r():app.run(host='0.0.0.0',port=10000)
+Thread(target=_r,daemon=True).start()
+TT=os.getenv("TELEGRAM_TOKEN")or os.getenv("BOT_TOKEN")or""
+CID=os.getenv("CHAT_ID")or os.getenv("TELEGRAM_CHAT_ID")or""
+AK=os.getenv("BYBIT_API_KEY","").strip()
+AS=os.getenv("BYBIT_SECRET","").strip()or os.getenv("BYBIT_API_SECRET","").strip()
+ex=ccxt.bybit({'apiKey':AK,'secret':AS,'enableRateLimit':True,'options':{'defaultType':'unified'}})
+try:ex.load_markets()
+except:0
+sp=ccxt.okx({'enableRateLimit':True})
+try:sp.load_markets()
+except:0
+W=timezone(timedelta(hours=1))
+WL=["BCH/USDT:USDT","ETH/USDT:USDT","SOL/USDT:USDT","BNB/USDT:USDT","DOGE/USDT:USDT","BONK/USDT:USDT","WIF/USDT:USDT","ZEC/USDT:USDT","AVAX/USDT:USDT","DOT/USDT:USDT","ONDO/USDT:USDT","PAXG/USDT:USDT"]
+TFS=['15m','30m','1h','2h']
+MAXT=4;SEC=900;PCT=0.05;MINN=1.0
+act={};cl=[];ps=False;lft={};lta={};lid=0;ls=0;ld=None;lw=None;lm=None
+def snd(m):
+ try:requests.post(f"https://api.telegram.org/bot{TT}/sendMessage",data={"chat_id":CID,"text":m[:3900],"parse_mode":"Markdown"},timeout=12)
+ except:0
+def fp(x):
+ if x is None:return "N/A"
+ return f"${x:.8f}" if x<0.0001 else f"${x:.6f}" if x<0.01 else f"${x:.5f}" if x<1 else f"${x:.4f}" if x<100 else f"${x:.2f}"
+def ohlc(s,t,l=100):
+ try:return sp.fetch_ohlcv(s,t,limit=l)
+ except:
+  try:return sp.fetch_ohlcv(s,t.lower(),limit=l)
+  except:return None
+def prc(s):
+ try:return float(ex.fetch_ticker(s)['last'])
+ except:return None
+def rsi(c,p=14):
+ if len(c)<p+1:return 50
+ g=[];l=[]
+ for i in range(1,len(c)):d=c[i]-c[i-1];g.append(max(d,0));l.append(max(-d,0))
+ ag=sum(g[-p:])/p;al=sum(l[-p:])/p
+ return 70 if al==0 else 100-(100/(1+ag/al))
+def ema(c,p=50):
+ if len(c)<p:return c[-1]
+ k=2/(p+1);e=sum(c[:p])/p
+ for x in c[p:]:e=x*k+e*(1-k)
+ return e
+def be(last,bos,f,fm,em):
+ pc=lambda a,b:abs(a-b)/b*100 if b else 999
+ if f and pc(fm,bos)<0.8:return fm,"FVG+BOS"
+ if pc(em,bos)<1.0:return em,"EMA+BOS"
+ return (fm,"FVG") if f else (bos,"BOS")
+def bal():
+ try:
+  b=ex.fetch_balance(params={'accountType':'UNIFIED'})
+  for acc in b.get('info',{}).get('result',{}).get('list',[]):
+   for co in acc.get('coin',[]):
+    if co.get('coin')=='USDT':
+     v=co.get('equity')or co.get('walletBalance')
+     if v:return float(v)
+  return float(b.get('total',{}).get('USDT',0)or 0)
+ except:return 0.0
+def set_sl(sy,sl,tp):
+ try:m=ex.market(sy);ex.private_post_v5_position_trading_stop({'category':'linear','symbol':m['id'],'stopLoss':str(ex.price_to_precision(sy,sl)),'takeProfit':str(ex.price_to_precision(sy,tp)),'tpslMode':'Full','positionIdx':0})
+ except:0
+def set_be(sy,en):
+ try:m=ex.market(sy);ex.private_post_v5_position_trading_stop({'category':'linear','symbol':m['id'],'stopLoss':str(ex.price_to_precision(sy,en)),'tpslMode':'Full','positionIdx':0})
+ except:0
+def lev(en,sl,b):
+ slp=abs(en-sl)/en if en else 0.01;lv=max(5,min(int(0.20/slp),10));mg=b*PCT
+ if mg*lv*slp>mg*0.20:mg=(mg*0.20)/(lv*slp)
+ return lv,max(0.6,min(mg,b*PCT))
+def add(sy,sd,en,ex_,pn,rs):cl.append({"dt":datetime.now(W),"date":datetime.now(W).strftime("%Y-%m-%d"),"sym":sy,"side":sd,"entry":en,"exit":ex_,"pnl":pn,"res":rs});cl.pop(0) if len(cl)>200 else 0
+def rep(p="daily"):
+ now=datetime.now(W)
+ if p=="daily":f=[c for c in cl if c["date"]==now.strftime("%Y-%m-%d")]
+ elif p=="weekly":f=[c for c in cl if c["dt"]>=now-timedelta(days=now.weekday())]
+ else:f=[c for c in cl if c["dt"].month==now.month]
+ if not f:return f"📊 {p.upper()} - No closed yet ${bal():.2f}"
+ tp=sum(c["pnl"] for c in f);w=len([c for c in f if c["pnl"]>0]);wr=w/len(f)*100 if f else 0
+ d="\n".join([f"{'🟢' if c['pnl']>0 else '🔴'} {c['sym']} {c['side']} {c['pnl']:+.2f}% {c['res']}" for c in f[-15:]])
+ return f"📊 {p.upper()} {now.strftime('%Y-%m-%d')} ${bal():.2f} T{len(f)} W{w} L{len(f)-w} WR{wr:.1f}% Tot{tp:+.2f}%\n\n{d}\nA{len(act)}/{MAXT}"
+def smc(sym):
+ raw=sym.replace(":USDT","");o1=ohlc(raw,'1h',100)
+ if not o1 or len(o1)<60:return f"{sym}: No 1H",0,None
+ ch=[c[4] for c in o1];e1=ema(ch,50);hb=ch[-1]>e1;ht="BULL" if hb else "BEAR"
+ bs=0;bm="";bt=None
+ for tf in TFS:
+  o=ohlc(raw,tf,100)
+  if not o or len(o)<60:continue
+  cc=[c[4] for c in o];hh=[c[2] for c in o];ll=[c[3] for c in o];vv=[c[5] for c in o];last=cc[-1];em=ema(cc,50);rs=rsi(cc,14);vm=sum(vv[-20:])/20 if len(vv)>=20 else vv[-1]
+  ph=max(hh[-30:-5]);pl=min(ll[-30:-5]);fb=hh[-3]<ll[-1];fbe=ll[-3]>hh[-1]
+  fbm=(hh[-3]+ll[-1])/2 if fb else last;fbe_=(ll[-3]+hh[-1])/2 if fbe else last;sc=0
+  if last>ph:
+   if last>em:sc+=1
+   if 50<rs<75:sc+=1
+   if vv[-1]>vm*1.1:sc+=1
+   if fb:sc+=1
+   if hb:sc+=2
+   if sc>=4 and sc>bs:
+    bs=sc;en,re=be(last,ph,fb,fbm,em);sl=min(ll[-10:]);rk=en-sl;rk=en*0.015 if rk<=0 or rk<en*0.005 else rk;sl=en-rk;t1=en+rk*1.5;t2=en+rk*3
+    q="HIGH" if sc>=5 else "MED";bt={"symbol":sym,"side":"LONG","entry":en,"sl":sl,"tp1":t1,"tp2":t2,"risk":rk,"tf":tf,"entry_reason":re,"score":sc,"be":False,"amt":0}
+    bm=f"🚨 LIVE ALERT\n\n{sym} - A+ LONG [{tf}] 🟢\nQuality: {sc}/6 {q}\nPrice: {fp(last)}\nTrend: 1H {ht} | {tf} Above EMA50 | RSI {rs:.1f}\nSetup: Above 50EMA, RSI {rs:.1f}, {re}, 1H {ht} ✅\n\n🎯 ENTRY: {fp(en)}\n📍 {re} + BOS Confluence 🔥\nSL: {fp(sl)} ({(sl-en)/en*100:+.1f}%)\nTP1: {fp(t1)} ({(t1-en)/en*100:+.1f}%) - Take 50%\nTP2: {fp(t2)} ({(t2-en)/en*100:+.1f}%) - Take rest\nRR: 1:1.5\nTrailing ON"
+  elif last<pl:
+   if last<em:sc+=1
+   if 25<rs<50:sc+=1
+   if vv[-1]>vm*1.1:sc+=1
+   if fbe:sc+=1
+   if not hb:sc+=2
+   if sc>=4 and sc>bs:
+    bs=sc;en,re=be(last,pl,fbe,fbe_,em);sl=max(hh[-10:]);rk=sl-en;rk=en*0.015 if rk<=0 or rk<en*0.005 else rk;sl=en+rk;t1=en-rk*1.5;t2=en-rk*3
+    q="HIGH" if sc>=5 else "MED";bt={"symbol":sym,"side":"SHORT","entry":en,"sl":sl,"tp1":t1,"tp2":t2,"risk":rk,"tf":tf,"entry_reason":re,"score":sc,"be":False,"amt":0}
+    bm=f"🚨 LIVE ALERT\n\n{sym} - A+ SHORT [{tf}] 🔴\nQuality: {sc}/6 {q}\nPrice: {fp(last)}\nTrend: 1H {ht} | {tf} Below EMA50 | RSI {rs:.1f}\nSetup: Below 50EMA, RSI {rs:.1f}, {re}, 1H {ht} ✅\n\n🎯 ENTRY: {fp(en)}\n📍 {re} + BOS Confluence 🔥\nSL: {fp(sl)} ({(sl-en)/en*100:+.1f}%)\nTP1: {fp(t1)} ({(t1-en)/en*100:+.1f}%) - Take 50%\nTP2: {fp(t2)} ({(t2-en)/en*100:+.1f}%) - Take rest\nRR: 1:1.5\nTrailing ON"
+ return (bm,1,bt) if bm else (f"*{sym}* Ranging {ht}",0,None)
+
+def handle(c,hi,tr):
+ if not hi or not tr:return 0,None
+ if c in act:
+  o=act[c]
+  if o['side']==tr['side']:return 0,f"{c} already {o['side']}"
+  cur=prc(c)or o['entry'];pn=(cur-o['entry'])/o['entry']*100 if o['side']=="LONG" else (o['entry']-cur)/o['entry']*100
+  if pn>-0.8:return 0,f"🛡️ {c} FLIP {pn:+.1f}% need -0.8%"
+  if tr.get('score',4)<5:return 0,f"🛡️ {c} score {tr.get('score')}/6"
+  if time.time()-lft.get(c,0)<5400:return 0,f"🛡️ {c} cooldown"
+  close_one(c,"FLIP");snd(f"🔄 FLIP {c} {o['side']}->{tr['side']} {pn:+.2f}%");lft[c]=time.time()
+ act[c]=tr;return 1,None
+
+def open_auto(tr):
+ try:
+  b=bal()
+  if b<5:snd(f"❌ {tr['symbol']} Low bal ${b:.2f}");return None
+  if len(act)>=MAXT:snd(f"⚪ {tr['symbol']} MAX {MAXT}");return None
+  lv,mg=lev(tr['entry'],tr['sl'],b)
+  try:ex.set_leverage(lv,tr['symbol'])
+  except:0
+  p=prc(tr['symbol'])
+  if not p:snd(f"❌ {tr['symbol']} No price");return None
+  try:mn=ex.market(tr['symbol']).get('limits',{}).get('amount',{}).get('min',0)
+  except:mn=0
+  qr=(mg*lv)/p;qr=(MINN*1.1)/p if qr*p<MINN else qr
+  try:q=float(ex.amount_to_precision(tr['symbol'],qr))
+  except:q=qr
+  if q*p<0.9:snd(f"❌ {tr['symbol']} low ${q*p:.2f}");return None
+  if mn and q<mn:
+   try:q=float(ex.amount_to_precision(tr['symbol'],mn))
+   except:q=mn
+  sd='buy' if tr['side']=='LONG' else 'sell';snd(f"⏳ {tr['symbol']} {tr['side']} {lv}x {q} ${q*p:.2f} bal ${b:.2f}");ex.create_market_order(tr['symbol'],sd,q,params={'positionIdx':0});time.sleep(1.2);set_sl(tr['symbol'],tr['sl'],tr['tp2']);tr['entry']=p;tr['amt']=q;tr['lev']=lv;tr['margin']=mg;return tr
+ except Exception as e:snd(f"❌ OPEN FAIL {tr['symbol']} {e}");return None
+
+def close_one(sy,rs="MANUAL"):
+ try:
+  poss=ex.fetch_positions(params={'accountType':'UNIFIED','symbol':sy})
+  for po in poss:
+   if po['symbol']!=sy:continue
+   sz=float(po.get('contracts',0)or 0)
+   if sz==0:continue
+   sz_f=float(po.get('size',sz)or sz);sd='sell' if po.get('side','').lower() in ['long','buy'] or sz_f>0 else 'buy'
+   if sz_f<0 or po.get('side','').lower()=='short':sd='buy'
+   amt=abs(sz_f);en=act[sy]['entry'] if sy in act else float(po.get('entryPrice',0)or 0);cur=prc(sy)or en
+   ex.create_market_order(sy,sd,amt,params={'reduceOnly':True,'positionIdx':0})
+   if en and cur:
+    s=act[sy]['side'] if sy in act else ("LONG" if sd=='sell' else "SHORT");pn=(cur-en)/en*100 if s=="LONG" else (en-cur)/en*100
+    add(sy,s,en,cur,pn,rs)
+   act.pop(sy,None)
+   return amt
+ except Exception as e:print(e)
+ if sy in act:act.pop(sy,None)
+ return 0
+
+def close_all():
+ c=0
+ try:
+  poss=ex.fetch_positions(params={'accountType':'UNIFIED'})
+  for po in poss:
+   sz=float(po.get('contracts',0)or 0)
+   if sz==0:continue
+   sy=po['symbol'];sz_f=float(po.get('size',sz)or sz);sd='sell' if po.get('side','').lower() in ['long','buy'] or sz_f>0 else 'buy'
+   if sz_f<0 or po.get('side','').lower()=='short':sd='buy'
+   amt=abs(sz_f);en=act[sy]['entry'] if sy in act else float(po.get('entryPrice',0)or 0);cur=prc(sy)or en
+   try:
+    ex.create_market_order(sy,sd,amt,params={'reduceOnly':True,'positionIdx':0})
+    if en and cur:
+     s=act[sy]['side'] if sy in act else ("LONG" if sd=='sell' else "SHORT");pn=(cur-en)/en*100 if s=="LONG" else (en-cur)/en*100
+     add(sy,s,en,cur,pn,"CLOSEALL")
+    c+=1;time.sleep(0.3)
+   except:0
+  act.clear()
+  return c
+ except:act.clear();return c
+
+try:
+ poss=ex.fetch_positions(params={'accountType':'UNIFIED'})
+ for po in poss:
+  sz=float(po.get('contracts',0)or 0)
+  if sz!=0:
+   sy=po['symbol'];en=float(po.get('entryPrice',0)or 0)
+   if en==0:continue
+   sd="LONG" if po.get('side','').lower() in ['long','buy'] or sz>0 else "SHORT"
+   if sz<0:sd="SHORT"
+   act[sy]={"symbol":sy,"side":sd,"entry":en,"sl":en*0.97 if sd=="LONG" else en*1.03,"tp1":en*1.02 if sd=="LONG" else en*0.98,"tp2":en*1.04 if sd=="LONG" else en*0.96,"tf":"REC","score":5,"be":False,"amt":abs(sz),"lev":5,"margin":0,"entry_reason":"Recovered"}
+   set_sl(sy,act[sy]['sl'],act[sy]['tp2'])
+except:0
+snd(f"🚀 V3.2.7 FIXED /trade OK ${bal():.2f} {len(act)}/{MAXT}")
+while True:
+ try:
+  url=f"https://api.telegram.org/bot{TT}/getUpdates?offset={lid+1}&timeout=20";r=requests.get(url,timeout=25).json()
+  for u in r.get("result",[]):
+   lid=u["update_id"];txt=u.get("message",{}).get("text","")or""
+   if not txt:continue
+   low=txt.lower().strip();pts=txt.strip().split()
+   if low in ["/start","/help"]:snd(f"🤖 V3.2.7 FIXED {'PAUSED' if ps else 'PLAYING'} ${bal():.2f} {len(act)}/{MAXT} /scan /trade /trades /bal /pause /play /closeall /status /price /coin /pnl /daily /today /weekly /monthly")
+   elif low=="/status":snd(f"📊 STATUS {'PAUSED' if ps else 'PLAYING'} ${bal():.2f} Active {len(act)}/{MAXT} Today {len([c for c in cl if c['date']==datetime.now(W).strftime('%Y-%m-%d')])}")
+   elif low in ["/pnl","/report","/daily","/today","/weekly","/monthly","/trades","/trade","/activetrade","/active"]:
+    try:
+     if low in ["/trades","/trade","/activetrade","/active"]:
+      if not act:
+       try:
+        poss=ex.fetch_positions(params={'accountType':'UNIFIED'})
+        real=[p['symbol'] for p in poss if float(p.get('contracts',0)or 0)!=0]
+        if real:snd(f"🔄 Sync Bybit has {len(real)}: {', '.join(real)}\n${bal():.2f}\n\n"+rep("daily"))
+        else:snd(f"⚪ No active ${bal():.2f}\n\n"+rep("daily"))
+       except:snd(f"⚪ No active ${bal():.2f}\n\n"+rep("daily"))
+      else:
+       msg=""
+       for c_,t in list(act.items()):
+        try:
+         cur=prc(c_) or t['entry'];pn=(cur-t['entry'])/t['entry']*100
+         if t['side']=="SHORT":pn=-pn
+         msg+=f"📊 {c_} {t['side']} {pn:+.2f}% BE:{t['be']} {fp(t['entry'])}->{fp(cur)} SL{fp(t['sl'])} TP2{fp(t['tp2'])}\n"
+        except:msg+=f"📊 {c_} {t['side']} err\n"
+       snd(msg+"\n"+rep("daily"))
+     elif low in ["/pnl","/report"]:snd(rep("daily")+"\n\n"+rep("weekly")+"\n\n"+rep("monthly"))
+     elif low in ["/daily","/today"]:snd(rep("daily"))
+     elif low=="/weekly":snd(rep("weekly"))
+     else:snd(rep("monthly"))
+    except Exception as e:snd(f"cmd err {e}")
+   elif low=="/pause":ps=True;snd(f"⏸️ PAUSED ${bal():.2f} Active {len(act)}")
+   elif low in ["/play","/resume","/unpause"]:ps=False;snd(f"▶️ RESUMED ${bal():.2f}")
+   elif low=="/bal":snd(f"💰 ${bal():.2f} {len(act)}/{MAXT} 5-10x 5%")
+   elif low in ["/stop","/closeall","/close"]:n=close_all();snd(f"✅ CLOSED {n} ${bal():.2f}\n\n"+rep("daily"))
+   elif low.startswith("/price"):
+    if len(pts)<2:snd("Use /price ZEC")
+    else:co=pts[1].upper()+"/USDT:USDT";p=prc(co);snd(f"💰 {pts[1].upper()} = {fp(p)}" if p else "No data")
+   elif low.startswith("/coin"):
+    if len(pts)<2:snd("Use /coin ZEC")
+    else:
+     co=pts[1].upper()+"/USDT:USDT";snd(f"🔍 {co}...");a,ok,tr=smc(co);snd(a)
+     if ok:
+      al,msg=handle(co,ok,tr)
+      if al:ot=open_auto(tr);act[tr['symbol']]=ot if ot else act.get(tr['symbol']);snd(f"✅ AUTO OPEN {tr['symbol']} {tr['side']} {tr['tf']}\nENTRY {fp(ot['entry']) if ot else fp(tr['entry'])} SL {fp(tr['sl'])}\nTP1 {fp(tr['tp1'])} TP2 {fp(tr['tp2'])}\nBal ${bal():.2f} Lev {ot['lev'] if ot else 5}x\nSL/TP SET ON BYBIT ✅" if ot else "❌ fail")
+      elif msg:snd(msg)
+   elif low=="/scan":
+    if ps:snd("⏸️ PAUSED use /play");continue
+    snd("🔍 SCAN 12 coins...");full="";hq=[];blk=[]
+    for co in WL:
+     if lta.get(co,0)>time.time()-5400:continue
+     an,hi,tr=smc(co);full+=f"\n\n{an}\n---"
+     if hi and tr:
+      if co in act and act[co]['side']==tr['side']:hq.append(f"{co}({tr['tf']})");continue
+      al,msg=handle(co,hi,tr)
+      if al:ot=open_auto(tr);act[tr['symbol']]=ot if ot else act.get(tr['symbol']);hq.append(f"{co}({tr['tf']})" if ot else "");full+=f"\n✅ {co} {ot['lev'] if ot else 5}x" if ot else f"\n❌ {co} fail";lta[co]=time.time()
+      elif msg:blk.append(msg)
+     time.sleep(0.4)
+    snd(full+(f"\n\n🔥 A+: {', '.join(hq)}" if hq else "\n\n⚪ No A+")+(f"\n🛡️ {'; '.join(blk[:3])}" if blk else ""))
+  now=datetime.now(W);today=now.strftime("%Y-%m-%d");now_ts=time.time()
+  if ld!=today and now.hour==23 and now.minute>=59:snd("⏰ DAILY\n\n"+rep("daily"));ld=today
+  if now.weekday()==6 and now.hour==23 and now.minute>=59:
+   if lw!=today:snd("⏰ WEEKLY\n\n"+rep("weekly"));lw=today
+  if (now+timedelta(days=1)).month!=now.month and now.hour==23 and now.minute>=59:
+   if lm!=today:snd("⏰ MONTHLY\n\n"+rep("monthly"));lm=today
+  if not ps and now_ts-ls>SEC:
+   ls=now_ts
+   for co in WL:
+    if lta.get(co,0)>now_ts-5400:continue
+    an,hi,tr=smc(co)
+    if hi and tr:
+     if co in act and act[co]['side']==tr['side']:continue
+     o=act.get(co)
+     if o and o['side']!=tr['side']:
+      cur=prc(co)or o['entry'];pn=(cur-o['entry'])/o['entry']*100 if o['side']=="LONG" else (o['entry']-cur)/o['entry']*100
+      if pn<=-0.8 and tr.get('score',4)>=5 and time.time()-lft.get(co,0)>=5400:close_one(co,"FLIP");snd(f"🔄 FLIP {co} {o['side']}->{tr['side']} {pn:+.2f}%");lft[co]=time.time();ot=open_auto(tr);act[tr['symbol']]=ot if ot else act.get(tr['symbol']);snd(f"{an}\n✅ FLIP {co} {ot['lev'] if ot else 5}x" if ot else "");lta[co]=now_ts
+      else:continue
+     else:lta[co]=now_ts;snd(an);ot=open_auto(tr);act[tr['symbol']]=ot if ot else act.get(tr['symbol']);snd(f"✅ AUTO OPEN {tr['symbol']} {tr['side']} {tr['tf']}\nENTRY {fp(ot['entry']) if ot else fp(tr['entry'])} SL {fp(tr['sl'])}\nTP1 {fp(tr['tp1'])} TP2 {fp(tr['tp2'])}\nBal ${bal():.2f} Lev {ot['lev'] if ot else 5}x\nSL/TP SET ON BYBIT ✅" if ot else "")
     time.sleep(0.4)
    for sy,t in list(act.items()):
     cur=prc(sy)
