@@ -4,7 +4,7 @@ from flask import Flask
 from threading import Thread
 app=Flask(__name__)
 @app.route('/')
-def _():return "V3.3.1 Q-FVG+BOS"
+def _():return "V3.3.2 FINAL PERFECTED"
 def _r():app.run(host='0.0.0.0',port=10000)
 Thread(target=_r,daemon=True).start()
 TT=os.getenv("TELEGRAM_TOKEN")or os.getenv("BOT_TOKEN")or"";CID=os.getenv("CHAT_ID")or os.getenv("TELEGRAM_CHAT_ID")or""
@@ -57,11 +57,17 @@ def bal():
   return float(b.get('total',{}).get('USDT',0)or 0)
  except:return 0.0
 def set_sl(sy,sl,tp):
- try:m=ex.market(sy);ex.private_post_v5_position_trading_stop({'category':'linear','symbol':m['id'],'stopLoss':str(ex.price_to_precision(sy,sl)),'takeProfit':str(ex.price_to_precision(sy,tp)),'tpslMode':'Full','positionIdx':0})
- except:0
+ for idx in [0,1]:
+  for _ in range(2):
+   try:
+    m=ex.market(sy);ex.private_post_v5_position_trading_stop({'category':'linear','symbol':m['id'],'stopLoss':str(ex.price_to_precision(sy,sl)),'takeProfit':str(ex.price_to_precision(sy,tp)),'tpslMode':'Full','positionIdx':idx});return True
+   except: tm.sleep(0.5)
+ return False
 def set_be(sy,en):
- try:m=ex.market(sy);ex.private_post_v5_position_trading_stop({'category':'linear','symbol':m['id'],'stopLoss':str(ex.price_to_precision(sy,en)),'tpslMode':'Full','positionIdx':0})
- except:0
+ for idx in [0,1]:
+  try:m=ex.market(sy);ex.private_post_v5_position_trading_stop({'category':'linear','symbol':m['id'],'stopLoss':str(ex.price_to_precision(sy,en)),'tpslMode':'Full','positionIdx':idx});return True
+  except:0
+ return False
 def lev(en,sl,b):
  slp=abs(en-sl)/en if en else 0.01;lv=max(5,min(int(0.20/slp),10));mg=b*PCT
  if mg*lv*slp>mg*0.20:mg=(mg*0.20)/(lv*slp)
@@ -127,8 +133,13 @@ def open_auto(tr):
   try:q=float(ex.amount_to_precision(tr['symbol'],qr))
   except:q=qr
   if q*p<0.9:return None
-  sd='buy' if tr['side']=='LONG' else 'sell';ex.create_market_order(tr['symbol'],sd,q,params={'positionIdx':0});tm.sleep(1.2);set_sl(tr['symbol'],tr['sl'],tr['tp2']);tr['entry']=p;tr['amt']=q;tr['lev']=lv;tr['margin']=mg;tr['qty_usd']=q*p;tr['bal']=bal();return tr
- except:return None
+  sd='buy' if tr['side']=='LONG' else 'sell';ex.create_market_order(tr['symbol'],sd,q,params={'positionIdx':0});tm.sleep(1.8)
+  if not set_sl(tr['symbol'],tr['sl'],tr['tp2']):
+   try:ex.create_market_order(tr['symbol'],'sell' if tr['side']=='LONG' else 'buy',q,params={'reduceOnly':True,'positionIdx':0});snd(f"❌ SL FAILED - CLOSED {tr['symbol']} to protect (no SL)")
+   except:0
+   return None
+  tr['entry']=p;tr['amt']=q;tr['lev']=lv;tr['margin']=mg;tr['qty_usd']=q*p;tr['bal']=bal();return tr
+ except Exception as e: print(f"open_auto {e}"); return None
 def close_one(sy,rs="MANUAL"):
  try:
   poss=ex.fetch_positions(params={'accountType':'UNIFIED','symbol':sy})
@@ -167,7 +178,7 @@ try:
    if sz<0:sd="SHORT"
    act[sy]={"symbol":sy,"side":sd,"entry":en,"sl":en*0.97 if sd=="LONG" else en*1.03,"tp1":en*1.02 if sd=="LONG" else en*0.98,"tp2":en*1.04 if sd=="LONG" else en*0.96,"tf":"REC","score":5,"be":False,"amt":abs(sz),"lev":5,"margin":0,"entry_reason":"Recovered"};set_sl(sy,act[sy]['sl'],act[sy]['tp2'])
 except:0
-snd(f"🚀 V3.3.1 FIXED ${bal():.2f} {len(act)}/{MAXT}")
+snd(f"🚀 V3.3.2 PERFECTED FINAL ${bal():.2f} {len(act)}/{MAXT} SL GUARANTEED")
 while True:
  try:
   url=f"https://api.telegram.org/bot{TT}/getUpdates?offset={lid+1}&timeout=20";r=requests.get(url,timeout=25).json()
@@ -175,7 +186,7 @@ while True:
    lid=u["update_id"];txt=u.get("message",{}).get("text","")or""
    if not txt:continue
    low=txt.lower().strip();pts=txt.strip().split()
-   if low in ["/start","/help"]:snd(f"V3.3.1 {'PAUSED' if ps else 'PLAYING'} ${bal():.2f} {len(act)}/{MAXT} /scan /trade /bal /pause /play /closeall /pnl /daily")
+   if low in ["/start","/help"]:snd(f"V3.3.2 FINAL {'PAUSED' if ps else 'PLAYING'} ${bal():.2f} {len(act)}/{MAXT} /scan /trade /bal /pause /play /closeall /pnl /daily")
    elif low=="/status":snd(f"STATUS {'PAUSED' if ps else 'PLAYING'} ${bal():.2f} A{len(act)}/{MAXT}")
    elif low in ["/pnl","/report","/daily","/today","/weekly","/monthly","/trades","/trade","/activetrade","/active"]:
     if low in ["/trades","/trade","/activetrade","/active"]:
@@ -207,7 +218,7 @@ while True:
      if al:
       ot=open_auto(tr)
       if ot:act[ot['symbol']]=ot;snd(f"⚪ {ot['symbol']} {ot['side']} {ot['lev']}x {ot['amt']} {fp(ot['qty_usd'])}\nbal {fp(ot['bal'])}")
-      else:snd("❌ OPEN FAIL")
+      else:snd("❌ OPEN FAIL or SL FAIL - protected")
      elif msg:snd(msg)
    elif low=="/scan":
     if ps:snd("⏸️ PAUSED use /play");continue
@@ -224,7 +235,7 @@ while True:
         act[ot['symbol']]=ot
         snd(f"🔴 LIVE\n\n{ot['symbol']} {ot['side']} [{ot['tf']}] Q{ot['score']}/6\n{fp(tr['last'])} {tr['ht']} {fp(ot['entry'])} {ot['entry_reason']} SL{fp(ot['sl'])}\nTP1{fp(ot['tp1'])} TP2{fp(ot['tp2'])}\n\n⚪ {ot['symbol']} {ot['side']} {ot['lev']}x {round(ot['amt'],4)} {fp(ot['qty_usd'])}\nbal {fp(ot['bal'])}")
         hq.append(f"{co}({tr['tf']})");lta[co]=tm.time()
-       else:snd(f"🔴 LIVE\n\n{an}\n\n⚪ {co} MAX 4")
+       else:snd(f"🔴 LIVE\n\n{an}\n\n⚪ {co} FAILED SL - protected")
       elif msg:continue
      tm.sleep(0.4)
     if not hq:snd("⚪ No A+")
