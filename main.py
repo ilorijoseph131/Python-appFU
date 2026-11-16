@@ -4,7 +4,7 @@ from flask import Flask
 from threading import Thread
 app=Flask(__name__)
 @app.route('/')
-def _():return "V3.3.2 FINAL PERFECTED"
+def _():return "V3.3.3 PERFECTED WIF FIX"
 def _r():app.run(host='0.0.0.0',port=10000)
 Thread(target=_r,daemon=True).start()
 TT=os.getenv("TELEGRAM_TOKEN")or os.getenv("BOT_TOKEN")or"";CID=os.getenv("CHAT_ID")or os.getenv("TELEGRAM_CHAT_ID")or""
@@ -59,9 +59,8 @@ def bal():
 def set_sl(sy,sl,tp):
  for idx in [0,1]:
   for _ in range(2):
-   try:
-    m=ex.market(sy);ex.private_post_v5_position_trading_stop({'category':'linear','symbol':m['id'],'stopLoss':str(ex.price_to_precision(sy,sl)),'takeProfit':str(ex.price_to_precision(sy,tp)),'tpslMode':'Full','positionIdx':idx});return True
-   except: tm.sleep(0.5)
+   try:m=ex.market(sy);ex.private_post_v5_position_trading_stop({'category':'linear','symbol':m['id'],'stopLoss':str(ex.price_to_precision(sy,sl)),'takeProfit':str(ex.price_to_precision(sy,tp)),'tpslMode':'Full','positionIdx':idx});return True
+   except:tm.sleep(0.5)
  return False
 def set_be(sy,en):
  for idx in [0,1]:
@@ -143,21 +142,37 @@ def open_auto(tr):
 def close_one(sy,rs="MANUAL"):
  try:
   poss=ex.fetch_positions(params={'accountType':'UNIFIED','symbol':sy})
+  found=False
   for po in poss:
    if po['symbol']!=sy:continue
    sz=float(po.get('contracts',0)or 0)
-   if sz==0:continue
+   if abs(sz)==0:continue
+   found=True
    sz_f=float(po.get('size',sz)or sz);sd='sell' if po.get('side','').lower() in ['long','buy'] or sz_f>0 else 'buy'
-   if sz_f<0 or po.get('side','').lower()=='short':sd='buy';amt=abs(sz_f);en=act[sy]['entry'] if sy in act else float(po.get('entryPrice',0)or 0);cur=prc(sy)or en;ex.create_market_order(sy,sd,amt,params={'reduceOnly':True,'positionIdx':0})
-   if en and cur:s=act[sy]['side'] if sy in act else ("LONG" if sd=='sell' else "SHORT");pn=(cur-en)/en*100 if s=="LONG" else (en-cur)/en*100;add(sy,s,en,cur,pn,rs)
+   if sz_f<0 or po.get('side','').lower()=='short':sd='buy'
+   amt=abs(sz_f);en=act[sy]['entry'] if sy in act else float(po.get('entryPrice',0)or 0);cur=prc(sy)or en
+   try:ex.create_market_order(sy,sd,amt,params={'reduceOnly':True,'positionIdx':0})
+   except:0
+   if en and cur:
+    s=act[sy]['side'] if sy in act else ("LONG" if sd=='sell' else "SHORT")
+    pn=(cur-en)/en*100 if s=="LONG" else (en-cur)/en*100
+    add(sy,s,en,cur,pn,rs)
    act.pop(sy,None);return amt
- except:0
- if sy in act:act.pop(sy,None)
+  if not found and sy in act:
+   en=act[sy]['entry'];sd=act[sy]['side'];cur=prc(sy)or en;pn=(cur-en)/en*100 if sd=="LONG" else (en-cur)/en*100
+   add(sy,sd,en,cur,pn,rs if rs!="MANUAL" else "EXCH_SL");act.pop(sy,None);return 1
+ except Exception as e:print(f"close_one {e}")
+ if sy in act:
+  en=act[sy]['entry'];sd=act[sy]['side'];cur=prc(sy)or en;pn=(cur-en)/en*100 if sd=="LONG" else (en-cur)/en*100;add(sy,sd,en,cur,pn,rs);act.pop(sy,None)
  return 0
 def close_all():
  c=0
  try:
   poss=ex.fetch_positions(params={'accountType':'UNIFIED'})
+  real={p['symbol']:float(p.get('contracts',0)or 0) for p in poss if float(p.get('contracts',0)or 0)!=0}
+  for sy in list(act.keys()):
+   if sy not in real:
+    en=act[sy]['entry'];sd=act[sy]['side'];cur=prc(sy)or en;pn=(cur-en)/en*100 if sd=="LONG" else (en-cur)/en*100;add(sy,sd,en,cur,pn,"CLOSEALL");c+=1;continue
   for po in poss:
    sz=float(po.get('contracts',0)or 0)
    if sz==0:continue
@@ -167,6 +182,31 @@ def close_all():
    except:0
   act.clear();return c
  except:act.clear();return c
+def sync_exchange():
+ try:
+  poss=ex.fetch_positions(params={'accountType':'UNIFIED'})
+  real={p['symbol']:float(p.get('contracts',0)or 0) for p in poss if abs(float(p.get('contracts',0)or 0))>0}
+  for sy in list(act.keys()):
+   if sy not in real:
+    t=act[sy];cur=prc(sy)or t['entry'];en=t['entry'];sd=t['side'];pn=(cur-en)/en*100 if sd=="LONG" else (en-cur)/en*100
+    if sd=="LONG":
+     if cur>=t['tp2']:res="TP2"
+     elif cur>=t['tp1']:res="TP1"
+     elif cur<=t['sl']:res="SL"
+     else:res="EXCH_CLOSED"
+    else:
+     if cur<=t['tp2']:res="TP2"
+     elif cur<=t['tp1']:res="TP1"
+     elif cur>=t['sl']:res="SL"
+     else:res="EXCH_CLOSED"
+    add(sy,sd,en,cur,pn,res)
+    if "TP2" in res:snd(f"🎯 TP2 {sy} {pn:+.2f}% REAL HIT ${bal():.2f}\n\n"+rep("daily"))
+    elif "SL" in res:snd(f"❌ SL {sy} {pn:+.2f}% REAL HIT ${bal():.2f}\n\n"+rep("daily"))
+    elif "TP1" in res:snd(f"🎯 TP1 {sy} {pn:+.2f}% REAL HIT ${bal():.2f}")
+    else:snd(f"⚠️ {sy} closed on Bybit {pn:+.2f}% {res} ${bal():.2f}\n\n"+rep("daily"))
+    act.pop(sy,None)
+ except Exception as e:print(f"sync {e}")
+
 try:
  poss=ex.fetch_positions(params={'accountType':'UNIFIED'})
  for po in poss:
@@ -178,7 +218,7 @@ try:
    if sz<0:sd="SHORT"
    act[sy]={"symbol":sy,"side":sd,"entry":en,"sl":en*0.97 if sd=="LONG" else en*1.03,"tp1":en*1.02 if sd=="LONG" else en*0.98,"tp2":en*1.04 if sd=="LONG" else en*0.96,"tf":"REC","score":5,"be":False,"amt":abs(sz),"lev":5,"margin":0,"entry_reason":"Recovered"};set_sl(sy,act[sy]['sl'],act[sy]['tp2'])
 except:0
-snd(f"🚀 V3.3.2 PERFECTED FINAL ${bal():.2f} {len(act)}/{MAXT} SL GUARANTEED")
+snd(f"🚀 V3.3.3 PERFECTED WIF FIX ${bal():.2f} {len(act)}/{MAXT} SL GUARANTEED + SYNC")
 while True:
  try:
   url=f"https://api.telegram.org/bot{TT}/getUpdates?offset={lid+1}&timeout=20";r=requests.get(url,timeout=25).json()
@@ -186,7 +226,7 @@ while True:
    lid=u["update_id"];txt=u.get("message",{}).get("text","")or""
    if not txt:continue
    low=txt.lower().strip();pts=txt.strip().split()
-   if low in ["/start","/help"]:snd(f"V3.3.2 FINAL {'PAUSED' if ps else 'PLAYING'} ${bal():.2f} {len(act)}/{MAXT} /scan /trade /bal /pause /play /closeall /pnl /daily")
+   if low in ["/start","/help"]:snd(f"V3.3.3 WIF FIX {'PAUSED' if ps else 'PLAYING'} ${bal():.2f} {len(act)}/{MAXT} /scan /trade /bal /pause /play /closeall /pnl /daily")
    elif low=="/status":snd(f"STATUS {'PAUSED' if ps else 'PLAYING'} ${bal():.2f} A{len(act)}/{MAXT}")
    elif low in ["/pnl","/report","/daily","/today","/weekly","/monthly","/trades","/trade","/activetrade","/active"]:
     if low in ["/trades","/trade","/activetrade","/active"]:
@@ -233,7 +273,7 @@ while True:
        ot=open_auto(tr)
        if ot:
         act[ot['symbol']]=ot
-        snd(f"🔴 LIVE\n\n{ot['symbol']} {ot['side']} [{ot['tf']}] Q{ot['score']}/6\n{fp(tr['last'])} {tr['ht']} {fp(ot['entry'])} {ot['entry_reason']} SL{fp(ot['sl'])}\nTP1{fp(ot['tp1'])} TP2{fp(ot['tp2'])}\n\n⚪ {ot['symbol']} {ot['side']} {ot['lev']}x {round(ot['amt'],4)} {fp(ot['qty_usd'])}\nbal {fp(ot['bal'])}")
+        snd(f"🔴 LIVE\n\n{ot['symbol']} {ot['side']} [{ot['tf']}] Q{ot['score']}/6\n{fp(tr['last'])} {ht} {fp(ot['entry'])} {ot['entry_reason']} SL{fp(ot['sl'])}\nTP1{fp(ot['tp1'])} TP2{fp(ot['tp2'])}\n\n⚪ {ot['symbol']} {ot['side']} {ot['lev']}x {round(ot['amt'],4)} {fp(ot['qty_usd'])}\nbal {fp(ot['bal'])}")
         hq.append(f"{co}({tr['tf']})");lta[co]=tm.time()
        else:snd(f"🔴 LIVE\n\n{an}\n\n⚪ {co} FAILED SL - protected")
       elif msg:continue
@@ -245,6 +285,7 @@ while True:
   if (now+timedelta(days=1)).month!=now.month and now.hour==23 and now.minute>=59 and lm!=today:snd("⏰ MONTHLY\n\n"+rep("monthly"));lm=today
   if not ps and now_ts-ls>SEC:
    ls=now_ts
+   sync_exchange()
    for co in WL:
     if lta.get(co,0)>now_ts-5400:continue
     an,hi,tr=smc(co)
@@ -258,6 +299,7 @@ while True:
      else:lta[co]=now_ts;ot=open_auto(tr)
      if ot:act[ot['symbol']]=ot;snd(f"🔴 LIVE\n\n{ot['symbol']} {ot['side']} [{ot['tf']}] Q{ot['score']}/6\n{fp(tr['last'])} {tr['ht']} {fp(ot['entry'])} {ot['entry_reason']} SL{fp(ot['sl'])}\nTP1{fp(ot['tp1'])} TP2{fp(ot['tp2'])}\n\n⚪ {ot['symbol']} {ot['side']} {ot['lev']}x {round(ot['amt'],4)} {fp(ot['qty_usd'])}\nbal {fp(ot['bal'])}")
     tm.sleep(0.4)
+   sync_exchange()
    for sy,t in list(act.items()):
     cur=prc(sy)
     if not cur:continue
